@@ -3,7 +3,7 @@ package uity
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"errors"
+	"golang.org/x/net/websocket"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,19 +20,19 @@ func DefaultUpgradeCheckHandle(r *http.Request) ([]byte, error) {
 
 func DefaultUpgradeCheck(r *http.Request) error {
 	if r.Method != http.MethodGet {
-		return errors.New("request method is not GET")
+		return websocket.ErrBadRequestMethod
 	}
 	if !CheckHttpHeaderKeyVale(r.Header, "Connection", "upgrade") {
-		return errors.New("not found in 'Connection' header")
+		return websocket.ErrBadUpgrade
 	}
 	if !CheckHttpHeaderKeyVale(r.Header, "Upgrade", "websocket") {
-		return errors.New("not found in 'Upgrade' header")
+		return websocket.ErrBadWebSocketProtocol
 	}
 	if !CheckHttpHeaderKeyVale(r.Header, "Sec-Websocket-Version", "13") {
-		return errors.New("unsupported version: 13 not found in 'Sec-Websocket-Version' header")
+		return websocket.ErrBadProtocolVersion
 	}
 	if !checkSecWebsocketKey(r.Header) {
-		return errors.New("not a websocket handshake: 'Sec-WebSocket-Key' header must be Base64 encoded value of 16-byte in length")
+		return &websocket.ProtocolError{ErrorString: "not a websocket handshake: 'Sec-WebSocket-Key' header must be Base64 encoded value of 16-byte in length"}
 	}
 	return nil
 }
@@ -72,26 +72,11 @@ func checkSecWebsocketKey(h http.Header) bool {
 }
 
 func MakeServerHandshakeBytes(req *http.Request) []byte {
-	//protocol := req.Header.Get("Sec-Websocket-Protocol")
-	//extensions := req.Header.Get("Sec-Websocket-Extensions")
 	key := req.Header.Get("Sec-Websocket-Key")
 	var p []byte
 	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
 	p = append(p, ComputeAcceptKey(key)...)
 	p = append(p, "\r\n"...)
-	//if protocol != "" {
-	//	p = append(p, "Sec-WebSocket-Protocol: "...)
-	//	p = append(p, protocol...)
-	//	p = append(p, "\r\n"...)
-	//}
-	//if extensions != "" {
-	//	p = append(p, "Sec-WebSocket-Extensions: "...)
-	//	p = append(p, extensions...)
-	//	p = append(p, "\r\n"...)
-	//}
-	//p = append(p, "Sec-WebSocket-Version: "...)
-	//p = append(p, "13"...)
-	//p = append(p, "\r\n"...)
 	p = append(p, "\r\n"...)
 	return p
 }

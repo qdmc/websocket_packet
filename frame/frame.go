@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"github.com/qdmc/websocket_packet/uity"
+	"golang.org/x/net/websocket"
 	"io"
 	"unicode/utf8"
 )
 
 var PayloadLengthError = errors.New(fmt.Sprintf("PayloadLength >  %d", PayloadMaxLength))
 
-const PayloadMaxLength = 0x7FFFFFFFFFFFFFFF
+// 这个是RFC 6455文档里的最大长度
+// const PayloadMaxLength = 0x7FFFFFFFFFFFFFFF
+
+// 按 golang.org/x/net/websocket 的最大长度
+const PayloadMaxLength = websocket.DefaultMaxPayloadBytes
 
 type Frame struct {
 	Fin           byte   // 1 bit ,1表示最后一个消息帧
@@ -235,16 +240,26 @@ func MasKingData(payloadData []byte, key uint32) []byte {
 	return bs
 }
 
-/*
-Client: FIN=1, opcode=0x1, msg="hello" // 第一个消息在单个帧中发送
-Server: (process complete message immediately) Hi.
-Client: FIN=0, opcode=0x1, msg="and a"  // 第二个消息跨三个帧发送
-Server: (listening, newmessage containing text started)
-Client: FIN=0, opcode=0x0, msg="happy new"
-Server: (listening, payload concatenated to previous message)
-Client: FIN=1, opcode=0x0, msg="year!"
-Server: (process complete message) Happy newyear to you too!
-*/
+func NewPong(bs []byte, keys ...uint32) *Frame {
+	if bs != nil && len(bs) > 125 {
+		bs = bs[0:125]
+	}
+	var key uint32
+	var isKey bool
+
+	if keys != nil && len(keys) == 1 {
+		key = keys[0]
+		isKey = true
+	}
+	frame := new(Frame)
+	frame.SetFin(0x02)
+	frame.SetOpcode(0x0A)
+	if isKey {
+		frame.SetMaskingKey(key)
+	}
+	frame.SetPayload(bs)
+	return frame
+}
 
 func PongFrameBytes(bs []byte, keys ...uint32) []byte {
 	if bs != nil && len(bs) > 125 {
@@ -266,6 +281,26 @@ func PongFrameBytes(bs []byte, keys ...uint32) []byte {
 	frame.SetPayload(bs)
 	framesBytes, _ = frame.ToBytes()
 	return framesBytes
+}
+
+func NewPing(bs []byte, keys ...uint32) *Frame {
+	if bs != nil && len(bs) > 125 {
+		bs = bs[0:125]
+	}
+	var key uint32
+	var isKey bool
+	if keys != nil && len(keys) == 1 {
+		key = keys[0]
+		isKey = true
+	}
+	frame := new(Frame)
+	frame.SetFin(0x02)
+	frame.SetOpcode(0x09)
+	if isKey {
+		frame.SetMaskingKey(key)
+	}
+	frame.SetPayload(bs)
+	return frame
 }
 
 func PingFrameBytes(bs []byte, keys ...uint32) []byte {
@@ -290,6 +325,26 @@ func PingFrameBytes(bs []byte, keys ...uint32) []byte {
 	return framesBytes
 }
 
+func NewCloseFrameBytes(bs []byte, keys ...uint32) *Frame {
+	if bs != nil && len(bs) > 125 {
+		bs = bs[0:125]
+	}
+	var key uint32
+	var isKey bool
+	if keys != nil && len(keys) == 1 {
+		key = keys[0]
+		isKey = true
+	}
+	frame := new(Frame)
+	frame.SetFin(0x02)
+	frame.SetOpcode(0x08)
+	if isKey {
+		frame.SetMaskingKey(key)
+	}
+	frame.SetPayload(bs)
+	return frame
+}
+
 func CloseFrameBytes(bs []byte, keys ...uint32) []byte {
 	if bs != nil && len(bs) > 125 {
 		bs = bs[0:125]
@@ -312,6 +367,51 @@ func CloseFrameBytes(bs []byte, keys ...uint32) []byte {
 	return framesBytes
 }
 
+func NewBinary(bs []byte, keys ...uint32) (*Frame, error) {
+	var key uint32
+	var isKey bool
+	if keys != nil && len(keys) == 1 {
+		key = keys[0]
+		isKey = true
+	}
+	if bs == nil && len(bs) == 0 {
+		return nil, errors.New("frames bytes  is empty")
+	} else if len(bs) > PayloadMaxLength {
+		return nil, errors.New("frames bytes  is too long")
+	} else {
+		frame := new(Frame)
+		frame.SetFin(0x01)
+		frame.SetOpcode(0x02)
+		if isKey {
+			frame.SetMaskingKey(key)
+		}
+		frame.SetPayload(bs)
+		return frame, nil
+	}
+}
+
+func NewText(bs []byte, keys ...uint32) (*Frame, error) {
+	var key uint32
+	var isKey bool
+	if keys != nil && len(keys) == 1 {
+		key = keys[0]
+		isKey = true
+	}
+	if bs == nil && len(bs) == 0 {
+		return nil, errors.New("frames bytes  is empty")
+	} else if len(bs) > PayloadMaxLength {
+		return nil, errors.New("frames bytes  is too long")
+	} else {
+		frame := new(Frame)
+		frame.SetFin(0x01)
+		frame.SetOpcode(0x01)
+		if isKey {
+			frame.SetMaskingKey(key)
+		}
+		frame.SetPayload(bs)
+		return frame, nil
+	}
+}
 func BinaryFrameBytes(bs []byte, keys ...uint32) []byte {
 	var key uint32
 	var isKey bool
@@ -401,4 +501,11 @@ func TextFrameBytes(bs []byte, keys ...uint32) ([]byte, error) {
 		framesBytes, _ = frame.ToBytes()
 	}
 	return framesBytes, nil
+}
+
+func CheckFrameType(b byte) error {
+	if b == 0x00 || b == 0x01 || b == 0x08 || b == 0x09 || b == 0x0A {
+		return nil
+	}
+	return &websocket.ProtocolError{ErrorString: "frame type is error"}
 }
