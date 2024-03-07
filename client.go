@@ -96,9 +96,16 @@ type Client struct {
 	url, protocol, origin string
 }
 
-// Options                返回配置项
-func (c *Client) Options() *ClientOptions {
+// GetOptions                返回配置项
+func (c *Client) GetOptions() *ClientOptions {
 	return c.opt
+}
+
+// SetOptions               设置配置项
+func (c *Client) SetOptions(opt *ClientOptions) {
+	if opt != nil && c.status == session.ClientCreate {
+		c.opt = opt
+	}
 }
 
 // Dial          链接到服务端
@@ -187,7 +194,6 @@ func (c *Client) reConnect() {
 			} else {
 				return
 			}
-
 		}
 	}()
 
@@ -207,7 +213,7 @@ func (c *Client) dialToServer() error {
 	c.s = session.NewSession(conn)
 	c.s.SetDisConnectCallBack(c.disConnCb)
 	c.s.SetFrameCallBack(c.msgCb)
-	go c.s.DisConnect()
+	go c.s.DoConnect()
 	return nil
 }
 
@@ -223,7 +229,7 @@ func (c *Client) parseUrl(urlStr string) error {
 	} else if u.Scheme == "wss" {
 		origin = fmt.Sprintf("https://%s", u.Host)
 	} else {
-		return errors.New("scheme must be in ws or wss")
+		return errors.New("scheme must be ws or wss")
 	}
 	c.url = u.String()
 	c.protocol = u.Scheme

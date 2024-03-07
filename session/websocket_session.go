@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-type ConnectedCallBack func(id int64)
+type ConnectedCallBack func(WebsocketSessionInterface)
 type DisConnectCallBack func(id int64, status Status)
 type FrameCallBack func(id int64, t byte, payload []byte)
 
@@ -35,7 +35,7 @@ func (c ConnectionDatabase) GetOnlineNone() int64 {
 /*
 WebsocketSessionInterface                            session通用接口
   - IsServer() bool                                  是否是服务端session
-  - GetId() int64                                    返回sessionId,客户端sessionId都为0
+  - GetId() int64                                    返回sessionId:服务端的sessionId全局唯一,客户端sessionId为0;
   - GetStatus() Status                               返回session状态
   - DoConnect(autoPingTicker ...int64)               执行conn的读取,autoPingTicker:自动发送pingFrame的ticker,>=10为有效值,默认是25秒
   - Write(frameType byte, bs []byte, keys ...uint32) 写入消息:frameType(消息类型,1,2,9,10 为有效值)
@@ -45,13 +45,14 @@ WebsocketSessionInterface                            session通用接口
 */
 type WebsocketSessionInterface interface {
 	GetId() int64
+	GetConn() *websocket.Conn
 	IsServer() bool
 	GetStatus() ConnectionDatabase
 	DoConnect(autoPingTicker ...int64)
 	Write(frameType byte, bs []byte, keys ...uint32) (int, error)
 	SetDisConnectCallBack(DisConnectCallBack)
 	SetFrameCallBack(FrameCallBack)
-	DisConnect()
+	DisConnect(isTimeOut ...bool)
 }
 
 func NewSession(c *websocket.Conn, isServer ...bool) WebsocketSessionInterface {
@@ -97,7 +98,9 @@ type websocketSession struct {
 func (s *websocketSession) GetId() int64 {
 	return s.id
 }
-
+func (s *websocketSession) GetConn() *websocket.Conn {
+	return s.conn
+}
 func (s *websocketSession) IsServer() bool {
 	return s.isServer
 }
@@ -228,12 +231,15 @@ func (s *websocketSession) SetFrameCallBack(back FrameCallBack) {
 	s.frameCb = back
 }
 
-func (s *websocketSession) DisConnect() {
-	s.mu.Lock()
-	s.mu.Unlock()
+func (s *websocketSession) DisConnect(isTimeOut ...bool) {
 	if s.status == Connected {
 		s.conn.Write(frame.CloseFrameBytes(nil))
-		close(s.stopChan)
+		if isTimeOut != nil && len(isTimeOut) == 1 && isTimeOut[0] {
+			s.close(CloseHartTimeOut)
+		} else {
+			s.close(CloseNormalClosure)
+		}
+
 	}
 
 }
@@ -241,7 +247,7 @@ func (s *websocketSession) close(status Status) {
 	s.mu.Lock()
 	s.mu.Unlock()
 	if s.status == Connected {
-		if status == CloseNormalClosure || status == CloseReadConnFailed || status == CloseWriteConnFailed {
+		if status == CloseNormalClosure || status == CloseReadConnFailed || status == CloseWriteConnFailed || CloseHartTimeOut == status {
 			close(s.stopChan)
 		}
 		s.status = status
