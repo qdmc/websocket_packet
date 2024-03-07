@@ -108,6 +108,15 @@ func (f *Frame) SetMaskingKey(key uint32) {
 	f.MaskingKey = key
 }
 
+func ReadOnce(r io.Reader) (int, *Frame, error) {
+	f := new(Frame)
+	readLen, err := f.Read(r)
+	if err != nil {
+		return readLen, nil, err
+	}
+	return readLen, f, nil
+}
+
 // Read         读取一个webSocket帧,返回读取的长度
 func (f *Frame) Read(r io.Reader) (int, error) {
 	var n int
