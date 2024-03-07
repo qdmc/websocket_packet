@@ -5,16 +5,16 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-type Status uint16
+type Status byte
 
 const (
-	Connected          Status = 200  //  正常连接。
-	CloseNormalClosure Status = 1000 //  正常关闭连接。
-
-	CloseInvalidFramePayloadData Status = 1007 //  无效的帧载荷数据，表示接收到的帧载荷数据不符合协议规范。
-	CloseIHartTimeOut            Status = 2001 //  心跳超时
-	CloseReadConnFailed          Status = 2002 //  读取失败
-	CloseWriteConnFailed         Status = 2003 //  写入失败
+	ClientCreate         Status = 0
+	ClientReconnect      Status = 1
+	Connected            Status = 2 //  正常连接。
+	CloseNormalClosure   Status = 3 //  正常关闭连接。
+	CloseHartTimeOut     Status = 4 //  心跳超时
+	CloseReadConnFailed  Status = 5 //  读取失败
+	CloseWriteConnFailed Status = 6 //  写入失败
 )
 
 func StatusToError(s Status) error {
@@ -23,13 +23,9 @@ func StatusToError(s Status) error {
 		return nil
 	case CloseNormalClosure:
 		return nil
-	case CloseInvalidFramePayloadData:
+	case CloseHartTimeOut:
 		return &websocket.ProtocolError{
-			ErrorString: fmt.Sprintf("%d: Invalid frame payload data", CloseInvalidFramePayloadData),
-		}
-	case CloseIHartTimeOut:
-		return &websocket.ProtocolError{
-			ErrorString: fmt.Sprintf("%d: Heartbeat Timeout,close connection", CloseIHartTimeOut),
+			ErrorString: fmt.Sprintf("%d: Heartbeat Timeout,close connection", CloseHartTimeOut),
 		}
 	case CloseReadConnFailed:
 		return &websocket.ProtocolError{
