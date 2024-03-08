@@ -207,7 +207,8 @@ func (s *sessionManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		return
 	}
-	go s.addSession(conn)
+
+	go s.addSession(conn, req.Header)
 }
 func (s *sessionManager) doTimeOut(id int64) {
 	item := s.delSession(id)
@@ -230,29 +231,30 @@ func (s *sessionManager) delSession(id int64) *sessionItem {
 	}
 	return nil
 }
-func (s *sessionManager) addSession(conn net.Conn) {
+func (s *sessionManager) addSession(conn net.Conn, header http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
+	sess := session.NewSession(conn, true)
+	sessionId := sess.GetId()
+	sess.SetFrameCallBack(s.doMsgCb)
+	sess.SetDisConnectCallBack(s.doDisConnCb)
 	item := sessionItem{
-		Session: session.NewSession(conn, true),
+		Session: sess,
 		t:       nil,
 	}
-	item.Session.SetFrameCallBack(s.doMsgCb)
-	item.Session.SetDisConnectCallBack(s.doDisConnCb)
 	if s.timeOutSecond >= 1 {
 		item.t = time.AfterFunc(time.Duration(s.timeOutSecond)*time.Second, func() {
 			newManager().doTimeOut(item.GetId())
 		})
 	}
-	s.m[item.GetId()] = item
-	go s.doConnCb(item.Session)
+	s.m[sessionId] = item
+	go s.doConnCb(sessionId, header)
 	go item.Session.DoConnect(25)
 }
 
-func (s *sessionManager) doConnCb(sess Session) {
+func (s *sessionManager) doConnCb(id int64, header http.Header) {
 	if s.cb != nil && s.cb.ConnectedCallBackHandle != nil {
-		go s.cb.ConnectedCallBackHandle(sess)
+		go s.cb.ConnectedCallBackHandle(id, header)
 	}
 }
 func (s *sessionManager) doDisConnCb(id int64, status ClientStatus) {

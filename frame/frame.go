@@ -272,7 +272,10 @@ func NewPongFrame(bs []byte, keys ...uint32) *Frame {
 	if isKey {
 		frame.SetMaskingKey(key)
 	}
-	frame.SetPayload(bs)
+	if bs != nil && len(bs) > 0 {
+		frame.SetPayload(bs)
+		frame.PayloadLength = uint64(len(bs))
+	}
 	return frame
 }
 
@@ -288,12 +291,15 @@ func NewPingFrame(bs []byte, keys ...uint32) *Frame {
 		isKey = true
 	}
 	frame := new(Frame)
-	frame.SetFin(0x02)
+	frame.SetFin(0x01)
 	frame.SetOpcode(0x09)
 	if isKey {
 		frame.SetMaskingKey(key)
 	}
-	frame.SetPayload(bs)
+	if bs != nil && len(bs) > 0 {
+		frame.SetPayload(bs)
+		frame.PayloadLength = uint64(len(bs))
+	}
 	return frame
 }
 
@@ -386,7 +392,7 @@ func AutoBinaryFramesBytes(bs []byte, keys ...uint32) ([]byte, error) {
 				frame.SetOpcode(0x00)
 			}
 			if index == len(bsArr)-1 {
-				frame.SetFin(0x02)
+				frame.SetFin(0x01)
 			} else {
 				frame.SetFin(0x00)
 			}
