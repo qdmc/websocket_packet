@@ -1,13 +1,17 @@
 package websocket_packet
 
 import (
+	"crypto/rand"
+	"crypto/sha1"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"github.com/qdmc/websocket_packet/session"
-	"github.com/qdmc/websocket_packet/uity"
 	"golang.org/x/net/websocket"
+	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -15,32 +19,30 @@ import (
 var manager *sessionManager
 var managerOnce sync.Once
 
-type ConnectedCallBack = session.ConnectedCallBack
-type DisConnectCallBack = session.DisConnectCallBack
-type MessageCallBack = session.FrameCallBack
-type Callbacks struct {
-	ConnectedCallBack
-	DisConnectCallBack
-	MessageCallBack
+// CallbackHandles    回调组
+type CallbackHandles struct {
+	session.ConnectedCallBackHandle  // 建立链接后的回调
+	session.DisConnectCallBackHandle // 断开链接后的回调
+	session.FrameCallBackHandle      // 帧读取后的回调
 }
 
 /*
-server实现的业务
- - 校验websocket握手(Handshake)
- - net.http.Handler:实现ServeHTTP(w http.ResponseWriter, req *http.Request)
- - 管理session:查询,断开
- - 消息的接收与发送
+ServerHandlerInterface 实现的业务
+  - 校验websocket握手(Handshake)
+  - net.http.Handler:实现ServeHTTP(w http.ResponseWriter, req *http.Request)
+  - 管理session:查询,断开
+  - 消息的接收与发送
 */
-
 type ServerHandlerInterface interface {
-	SetCallbacks(*Callbacks)
-	Len() int
-	GetSessionOnce(id int64) (Session, error)
-	GetClientsRange(start, end uint64) []Session
-	GetClientsWithIds(ids ...int64) map[int64]Session
-	DisConnect(id int64) error
-	SetTimeOut(i int64)
-	ServeHTTP(w http.ResponseWriter, req *http.Request)
+	SetCallbacks(*CallbackHandles)                           // 配置回调
+	Len() int                                                // 返回客户端(Session)总数
+	GetSessionOnce(id int64) (Session, error)                // 获取一个 Session
+	GetClientsRange(start, end uint64) []Session             // 获取获取 Session 列表
+	GetClientsWithIds(ids ...int64) map[int64]Session        // 获取获取 Session 列表
+	DisConnect(id int64) error                               // 断开一个 Session
+	SetTimeOut(i int64)                                      // 配置 Session 超时,在 Len()==0时有效
+	ServeHTTP(w http.ResponseWriter, req *http.Request)      // 实现net.http.Handler
+	SetHandshakeCheckHandle(f func(req *http.Request) error) // 配置一个校验的握手的handle
 }
 
 func NewServerHandle() ServerHandlerInterface {
@@ -83,7 +85,7 @@ func newManager() *sessionManager {
 		}
 		webServ := &websocket.Server{
 			Handshake: func(config *websocket.Config, request *http.Request) error {
-				err := uity.DefaultUpgradeCheck(request)
+				err := defaultUpgradeCheck(request)
 				if err != nil {
 					return err
 				}
@@ -103,7 +105,7 @@ func newManager() *sessionManager {
 
 type sessionManager struct {
 	mu                   sync.RWMutex
-	cb                   *Callbacks
+	cb                   *CallbackHandles
 	s                    *websocket.Server
 	m                    map[int64]sessionItem
 	handshakeCheckHandle func(req *http.Request) error
@@ -117,7 +119,7 @@ func (s *sessionManager) SetHandshakeCheckHandle(f func(req *http.Request) error
 		s.handshakeCheckHandle = f
 	}
 }
-func (s *sessionManager) SetCallbacks(callbacks *Callbacks) {
+func (s *sessionManager) SetCallbacks(callbacks *CallbackHandles) {
 	s.cb = callbacks
 }
 
@@ -173,6 +175,7 @@ func (s *sessionManager) GetClientsWithIds(ids ...int64) map[int64]Session {
 			res[item.GetId()] = item.Session
 		}
 	}
+
 	return res
 }
 
@@ -239,14 +242,14 @@ func (s *sessionManager) addSession(conn *websocket.Conn) {
 }
 
 func (s *sessionManager) doConnCb(sess Session) {
-	if s.cb != nil && s.cb.ConnectedCallBack != nil {
-		go s.cb.ConnectedCallBack(sess)
+	if s.cb != nil && s.cb.ConnectedCallBackHandle != nil {
+		go s.cb.ConnectedCallBackHandle(sess)
 	}
 }
-func (s *sessionManager) doDisConnCb(id int64, status Status) {
+func (s *sessionManager) doDisConnCb(id int64, status ClientStatus) {
 	item := s.delSession(id)
-	if item != nil && s.cb != nil && s.cb.DisConnectCallBack != nil {
-		go s.cb.DisConnectCallBack(id, status)
+	if item != nil && s.cb != nil && s.cb.DisConnectCallBackHandle != nil {
+		go s.cb.DisConnectCallBackHandle(id, status)
 	}
 }
 
@@ -256,7 +259,98 @@ func (s *sessionManager) doMsgCb(id int64, t byte, payload []byte) {
 	if item, ok := s.m[id]; ok && item.t != nil && s.timeOutSecond >= 1 {
 		item.t.Reset(time.Duration(s.timeOutSecond) * time.Second)
 	}
-	if s.cb != nil && s.cb.MessageCallBack != nil {
-		go s.cb.MessageCallBack(id, t, payload)
+	if s.cb != nil && s.cb.FrameCallBackHandle != nil {
+		go s.cb.FrameCallBackHandle(id, t, payload)
 	}
+}
+
+func defaultUpgradeCheck(r *http.Request) error {
+	if r.Method != http.MethodGet {
+		return websocket.ErrBadRequestMethod
+	}
+	if !checkHttpHeaderKeyVale(r.Header, "Connection", "upgrade") {
+		return websocket.ErrBadUpgrade
+	}
+	if !checkHttpHeaderKeyVale(r.Header, "Upgrade", "websocket") {
+		return websocket.ErrBadWebSocketProtocol
+	}
+	if !checkHttpHeaderKeyVale(r.Header, "Sec-Websocket-Version", "13") {
+		return websocket.ErrBadProtocolVersion
+	}
+	if !checkSecWebsocketKey(r.Header) {
+		return &websocket.ProtocolError{ErrorString: "not a websocket handshake: 'Sec-WebSocket-Key' header must be Base64 encoded value of 16-byte in length"}
+	}
+	return nil
+}
+
+func checkHttpHeaderValue(h http.Header, key string) ([]string, bool) {
+	if key == "" {
+		return nil, false
+	}
+	if val, ok := h[key]; ok {
+		return val, true
+	} else {
+		return nil, false
+	}
+}
+
+func checkHttpHeaderKeyVale(h http.Header, key, value string) bool {
+	if vals, ok := checkHttpHeaderValue(h, key); ok {
+		valueStr := strings.ToLower(value)
+		for _, val := range vals {
+			if strings.Index(strings.ToLower(val), valueStr) != -1 {
+				return true
+			}
+		}
+		return false
+	} else {
+		return false
+	}
+}
+
+// checkSecWebsocketKey   校验Sec-Websocket-Key
+func checkSecWebsocketKey(h http.Header) bool {
+	key := h.Get("Sec-Websocket-Key")
+	if key == "" {
+		return false
+	}
+	decoded, err := base64.StdEncoding.DecodeString(key)
+	return err == nil && len(decoded) == 16
+}
+
+// makeServerHandshakeBytes    生成服务端回复的报文
+func makeServerHandshakeBytes(req *http.Request) []byte {
+	key := req.Header.Get("Sec-Websocket-Key")
+	var p []byte
+	p = append(p, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "...)
+	p = append(p, computeAcceptKey(key)...)
+	p = append(p, "\r\n"...)
+	p = append(p, "\r\n"...)
+	return p
+}
+
+// httpResponseError    Response回复错误,在拆解Response前使用
+func httpResponseError(w http.ResponseWriter, status int, err error) {
+	errStr := http.StatusText(status)
+	if err != nil && err.Error() != "" {
+		errStr = err.Error()
+	}
+	http.Error(w, errStr, status)
+}
+
+// generateChallengeKey   生成随机的websocketKey
+func generateChallengeKey() (string, error) {
+	p := make([]byte, 16)
+	if _, err := io.ReadFull(rand.Reader, p); err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(p), nil
+}
+
+// computeAcceptKey     计算websocket的key
+func computeAcceptKey(key string) string {
+	h := sha1.New() //#nosec G401 -- (CWE-326) https://datatracker.ietf.org/doc/html/rfc6455#page-54
+	h.Write([]byte(key))
+	h.Write([]byte("258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))
+	return base64.StdEncoding.EncodeToString(h.Sum(nil))
 }

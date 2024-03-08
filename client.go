@@ -15,8 +15,8 @@ type Session = session.WebsocketSessionInterface
 // SessionDb      链接信息
 type SessionDb = session.ConnectionDatabase
 
-// Status     客户端状态
-type Status = session.Status
+// ClientStatus     客户端状态
+type ClientStatus = session.Status
 
 /*
 ClientOptions               客户端配置
@@ -87,12 +87,12 @@ func NewClient(opt *ClientOptions) *Client {
 	}
 }
 
-// Client                 websocket客户端
+// Client                 websocket客户端,只有一个 Session,并自动发送ping帧(25秒)与自动回复pong帧
 type Client struct {
 	//mu            sync.Mutex
 	opt                   *ClientOptions
 	s                     Session
-	status                Status
+	status                ClientStatus
 	url, protocol, origin string
 }
 
@@ -153,7 +153,7 @@ func (c *Client) connCb() {
 }
 
 // disConnCb     断开回调方法
-func (c *Client) disConnCb(id int64, s Status) {
+func (c *Client) disConnCb(id int64, s ClientStatus) {
 	c.status = s
 	if c.opt != nil && c.opt.DisConnectCallback != nil {
 		go c.opt.DisConnectCallback(session.StatusToError(s))

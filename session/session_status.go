@@ -1,15 +1,16 @@
 package session
 
 import (
+	"errors"
 	"fmt"
-	"golang.org/x/net/websocket"
 )
 
+// Status        session状态
 type Status byte
 
 const (
-	ClientCreate         Status = 0
-	ClientReconnect      Status = 1
+	ClientCreate         Status = 0 //  客户端建立
+	ClientReconnect      Status = 1 //  客户端重新链接
 	Connected            Status = 2 //  正常连接。
 	CloseNormalClosure   Status = 3 //  正常关闭连接。
 	CloseHartTimeOut     Status = 4 //  心跳超时
@@ -17,6 +18,7 @@ const (
 	CloseWriteConnFailed Status = 6 //  写入失败
 )
 
+// StatusToError    状态转换成 error
 func StatusToError(s Status) error {
 	switch s {
 	case Connected:
@@ -24,19 +26,11 @@ func StatusToError(s Status) error {
 	case CloseNormalClosure:
 		return nil
 	case CloseHartTimeOut:
-		return &websocket.ProtocolError{
-			ErrorString: fmt.Sprintf("%d: Heartbeat Timeout,close connection", CloseHartTimeOut),
-		}
+		return errors.New(fmt.Sprintf("%d: Heartbeat Timeout,close connection", CloseHartTimeOut))
 	case CloseReadConnFailed:
-		return &websocket.ProtocolError{
-			ErrorString: fmt.Sprintf("%d: Read connection failed,close connection", CloseReadConnFailed),
-		}
+		return errors.New(fmt.Sprintf("%d: Read connection failed,close connection", CloseReadConnFailed))
 	case CloseWriteConnFailed:
-		return &websocket.ProtocolError{
-			ErrorString: fmt.Sprintf("%d: Write to connection failed,close connection", CloseWriteConnFailed),
-		}
+		return errors.New(fmt.Sprintf("%d: Write to connection failed,close connection", CloseWriteConnFailed))
 	}
-	return &websocket.ProtocolError{
-		ErrorString: "Unknown errors",
-	}
+	return errors.New("unknown errors")
 }

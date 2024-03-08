@@ -1,35 +1,37 @@
+/*
+Package session  websocket链接
+  - websocket.Conn 链接管理:帧的读取与写入,状态及回调;并自动回复pong帧,及定时(默认25)发送ping帧
+  - Status         状态定义
+  - Callbacks      回调定义:  ConnectedCallBackHandle DisConnectCallBackHandle FrameCallBackHandle
+*/
 package session
 
 import (
 	"errors"
 	"github.com/qdmc/websocket_packet/frame"
-	"github.com/qdmc/websocket_packet/uity/ids"
 	"golang.org/x/net/websocket"
 	"sync"
 	"sync/atomic"
 	"time"
 )
 
-type ConnectedCallBack func(WebsocketSessionInterface)
-type DisConnectCallBack func(id int64, status Status)
-type FrameCallBack func(id int64, t byte, payload []byte)
+// ConnectedCallBackHandle     建立链接后的回调
+type ConnectedCallBackHandle func(session WebsocketSessionInterface)
+
+// DisConnectCallBackHandle    断开链接后的回调
+type DisConnectCallBackHandle func(id int64, status Status)
+
+// FrameCallBackHandle         帧读取后的回调
+type FrameCallBackHandle func(id int64, t byte, payload []byte)
 
 // ConnectionDatabase     链接数据
 type ConnectionDatabase struct {
-	Id            int64
-	ConnectedNano int64
-	CloseNano     int64
-	SendLength    uint64
-	WriteLength   uint64
-	Status        Status
-}
-
-func (c ConnectionDatabase) GetOnlineNone() int64 {
-	if c.CloseNano > 0 {
-		return time.Now().UnixNano() - c.ConnectedNano
-	} else {
-		return c.CloseNano - c.ConnectedNano
-	}
+	Id            int64  // sessionId
+	ConnectedNano int64  // 链接开始时间
+	CloseNano     int64  // 链接断开时间
+	SendLength    uint64 // 发送的数据长度
+	WriteLength   uint64 // 接收的数据长度
+	Status        Status // 状态
 }
 
 /*
@@ -39,8 +41,8 @@ WebsocketSessionInterface                            session通用接口
   - GetStatus() Status                               返回session状态
   - DoConnect(autoPingTicker ...int64)               执行conn的读取,autoPingTicker:自动发送pingFrame的ticker,>=10为有效值,默认是25秒
   - Write(frameType byte, bs []byte, keys ...uint32) 写入消息:frameType(消息类型,1,2,9,10 为有效值)
-  - SetDisConnectCallBack(DisConnectCallBack)        设置链接断开的回调
-  - SetFrameCallBack(FrameCallBack)                  设置报文帧的回调
+  - SetDisConnectCallBack(DisConnectCallBackHandle)        设置链接断开的回调
+  - SetFrameCallBack(FrameCallBackHandle)                  设置报文帧的回调
   - DisConnect()                                     主动关闭链接
 */
 type WebsocketSessionInterface interface {
@@ -50,16 +52,17 @@ type WebsocketSessionInterface interface {
 	GetStatus() ConnectionDatabase
 	DoConnect(autoPingTicker ...int64)
 	Write(frameType byte, bs []byte, keys ...uint32) (int, error)
-	SetDisConnectCallBack(DisConnectCallBack)
-	SetFrameCallBack(FrameCallBack)
+	SetDisConnectCallBack(DisConnectCallBackHandle)
+	SetFrameCallBack(FrameCallBackHandle)
 	DisConnect(isTimeOut ...bool)
 }
 
+// NewSession                     生成一个 WebsocketSessionInterface ,默认的是客户端session,服务端session会分配一个全局唯一的id
 func NewSession(c *websocket.Conn, isServer ...bool) WebsocketSessionInterface {
 	id := int64(0)
 	isServ := false
 	if isServer != nil && len(isServer) == 1 && isServer[0] {
-		id = ids.GetId()
+		id = getSessionId()
 		isServ = true
 	}
 	var rLen, wLen uint64
@@ -83,9 +86,9 @@ type websocketSession struct {
 	mu                sync.Mutex
 	conn              *websocket.Conn
 	status            Status
-	connectedCb       ConnectedCallBack
-	disConnectCb      DisConnectCallBack
-	frameCb           FrameCallBack
+	connectedCb       ConnectedCallBackHandle
+	disConnectCb      DisConnectCallBackHandle
+	frameCb           FrameCallBackHandle
 	stopChan          chan struct{}
 	pingTicker        *time.Ticker
 	continuationFrame *frame.Frame
@@ -141,7 +144,7 @@ func (s *websocketSession) DoConnect(pingTickers ...int64) {
 			go s.doPing()
 			continue
 		default:
-			readLen, f, err := frame.ReadOnce(s.conn)
+			readLen, f, err := frame.ReadOnceFrame(s.conn)
 			if err != nil {
 				status = CloseReadConnFailed
 				return
@@ -191,13 +194,13 @@ func (s *websocketSession) Write(frameType byte, bs []byte, keys ...uint32) (int
 	var writeLen int
 	switch frameType {
 	case 1:
-		frameBytes, err = frame.TextFrameBytes(bs, keys...)
+		frameBytes, err = frame.AutoTextFramesBytes(bs, keys...)
 	case 2:
-		frameBytes = frame.BinaryFrameBytes(bs, keys...)
+		frameBytes, err = frame.AutoBinaryFramesBytes(bs, keys...)
 	case 9:
-		frameBytes = frame.PingFrameBytes(bs, keys...)
+		frameBytes, err = frame.NewPongFrame(bs, keys...).ToBytes()
 	case 10:
-		frameBytes = frame.PongFrameBytes(bs, keys...)
+		frameBytes, err = frame.NewPongFrame(bs, keys...).ToBytes()
 	default:
 		err = errors.New("frameType must be in 1,2,9,10")
 	}
@@ -217,14 +220,14 @@ func (s *websocketSession) Write(frameType byte, bs []byte, keys ...uint32) (int
 	}
 }
 
-func (s *websocketSession) SetDisConnectCallBack(back DisConnectCallBack) {
+func (s *websocketSession) SetDisConnectCallBack(back DisConnectCallBackHandle) {
 	if s.status != Connected {
 		return
 	}
 	s.disConnectCb = back
 }
 
-func (s *websocketSession) SetFrameCallBack(back FrameCallBack) {
+func (s *websocketSession) SetFrameCallBack(back FrameCallBackHandle) {
 	if s.status != Connected {
 		return
 	}
@@ -233,7 +236,8 @@ func (s *websocketSession) SetFrameCallBack(back FrameCallBack) {
 
 func (s *websocketSession) DisConnect(isTimeOut ...bool) {
 	if s.status == Connected {
-		s.conn.Write(frame.CloseFrameBytes(nil))
+		bs, _ := frame.NewCloseFrame(nil).ToBytes()
+		s.conn.Write(bs)
 		if isTimeOut != nil && len(isTimeOut) == 1 && isTimeOut[0] {
 			s.close(CloseHartTimeOut)
 		} else {
