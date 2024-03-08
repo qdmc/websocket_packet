@@ -8,8 +8,9 @@ package session
 
 import (
 	"errors"
+	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
-	"golang.org/x/net/websocket"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -47,7 +48,7 @@ WebsocketSessionInterface                            session通用接口
 */
 type WebsocketSessionInterface interface {
 	GetId() int64
-	GetConn() *websocket.Conn
+	GetConn() net.Conn
 	IsServer() bool
 	GetStatus() ConnectionDatabase
 	DoConnect(autoPingTicker ...int64)
@@ -57,8 +58,13 @@ type WebsocketSessionInterface interface {
 	DisConnect(isTimeOut ...bool)
 }
 
-// NewSession                     生成一个 WebsocketSessionInterface ,默认的是客户端session,服务端session会分配一个全局唯一的id
-func NewSession(c *websocket.Conn, isServer ...bool) WebsocketSessionInterface {
+/*
+NewSession                     生成一个 WebsocketSessionInterface
+  - 这里的net.Conn默认是*net.TCPCon,不能兼容golang.org/x/net/websocket中的Conn
+  - isServer 来标识客户端与服务端,但session并没有处理握手
+  - 默认的是客户端session,服务端session会分配一个全局唯一的id
+*/
+func NewSession(c net.Conn, isServer ...bool) WebsocketSessionInterface {
 	id := int64(0)
 	isServ := false
 	if isServer != nil && len(isServer) == 1 && isServer[0] {
@@ -84,7 +90,7 @@ type websocketSession struct {
 	id                int64
 	isServer          bool
 	mu                sync.Mutex
-	conn              *websocket.Conn
+	conn              net.Conn
 	status            Status
 	connectedCb       ConnectedCallBackHandle
 	disConnectCb      DisConnectCallBackHandle
@@ -101,7 +107,7 @@ type websocketSession struct {
 func (s *websocketSession) GetId() int64 {
 	return s.id
 }
-func (s *websocketSession) GetConn() *websocket.Conn {
+func (s *websocketSession) GetConn() net.Conn {
 	return s.conn
 }
 func (s *websocketSession) IsServer() bool {
@@ -126,6 +132,10 @@ func (s *websocketSession) DoConnect(pingTickers ...int64) {
 	if s.status != Connected {
 		return
 	}
+	err := s.conn.SetDeadline(time.Time{})
+	if err != nil {
+		return
+	}
 	var status Status = CloseNormalClosure
 	defer func() {
 		s.conn.Close()
@@ -146,6 +156,7 @@ func (s *websocketSession) DoConnect(pingTickers ...int64) {
 		default:
 			readLen, f, err := frame.ReadOnceFrame(s.conn)
 			if err != nil {
+				fmt.Println("readErr: ", err.Error())
 				status = CloseReadConnFailed
 				return
 			} else {

@@ -7,8 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"github.com/qdmc/websocket_packet/session"
-	"golang.org/x/net/websocket"
 	"io"
+	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -37,14 +37,15 @@ type ServerHandlerInterface interface {
 	SetCallbacks(*CallbackHandles)                           // 配置回调
 	Len() int                                                // 返回客户端(Session)总数
 	GetSessionOnce(id int64) (Session, error)                // 获取一个 Session
-	GetClientsRange(start, end uint64) []Session             // 获取获取 Session 列表
-	GetClientsWithIds(ids ...int64) map[int64]Session        // 获取获取 Session 列表
+	GetSessionRange(start, end uint64) []Session             // 获取获取 Session 列表
+	GetSessionWithIds(ids ...int64) map[int64]Session        // 获取获取 Session 列表
 	DisConnect(id int64) error                               // 断开一个 Session
 	SetTimeOut(i int64)                                      // 配置 Session 超时,在 Len()==0时有效
 	ServeHTTP(w http.ResponseWriter, req *http.Request)      // 实现net.http.Handler
 	SetHandshakeCheckHandle(f func(req *http.Request) error) // 配置一个校验的握手的handle
 }
 
+// NewServerHandle      生成一个全局唯一的 ServerHandlerInterface
 func NewServerHandle() ServerHandlerInterface {
 	return newManager()
 }
@@ -79,26 +80,9 @@ func newManager() *sessionManager {
 		manager = &sessionManager{
 			mu:                   sync.RWMutex{},
 			cb:                   nil,
-			s:                    nil,
 			m:                    map[int64]sessionItem{},
 			handshakeCheckHandle: nil,
 		}
-		webServ := &websocket.Server{
-			Handshake: func(config *websocket.Config, request *http.Request) error {
-				err := defaultUpgradeCheck(request)
-				if err != nil {
-					return err
-				}
-				if newManager().handshakeCheckHandle != nil {
-					return newManager().handshakeCheckHandle(request)
-				}
-				return nil
-			},
-			Handler: func(conn *websocket.Conn) {
-				manager.addSession(conn)
-			},
-		}
-		manager.s = webServ
 	})
 	return manager
 }
@@ -106,7 +90,6 @@ func newManager() *sessionManager {
 type sessionManager struct {
 	mu                   sync.RWMutex
 	cb                   *CallbackHandles
-	s                    *websocket.Server
 	m                    map[int64]sessionItem
 	handshakeCheckHandle func(req *http.Request) error
 	timeOutSecond        int64
@@ -137,7 +120,7 @@ func (s *sessionManager) GetSessionOnce(id int64) (Session, error) {
 		return nil, errors.New(fmt.Sprintf("not found session with id(%b)", id))
 	}
 }
-func (s *sessionManager) GetClientsRange(start, end uint64) []Session {
+func (s *sessionManager) GetSessionRange(start, end uint64) []Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var list []Session
@@ -163,7 +146,7 @@ func (s *sessionManager) GetClientsRange(start, end uint64) []Session {
 	return list
 }
 
-func (s *sessionManager) GetClientsWithIds(ids ...int64) map[int64]Session {
+func (s *sessionManager) GetSessionWithIds(ids ...int64) map[int64]Session {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	res := map[int64]Session{}
@@ -199,8 +182,32 @@ func (s *sessionManager) SetTimeOut(i int64) {
 	}
 }
 
+// ServeHTTP            实现Http.HandlerFunc
 func (s *sessionManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	s.s.ServeHTTP(w, req)
+	var conn net.Conn
+	var err error
+	conn, err = serverUpgradeHandler(req, w, s.handshakeCheckHandle)
+	if err != nil {
+		httpResponseError(w, 404, err)
+		return
+	}
+	err = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err != nil {
+		return
+	}
+	_, err = conn.Write(makeServerHandshakeBytes(req))
+	if err != nil {
+		return
+	}
+	err = conn.SetWriteDeadline(time.Time{})
+	if err != nil {
+		return
+	}
+	err = conn.SetDeadline(time.Time{})
+	if err != nil {
+		return
+	}
+	go s.addSession(conn)
 }
 func (s *sessionManager) doTimeOut(id int64) {
 	item := s.delSession(id)
@@ -223,9 +230,10 @@ func (s *sessionManager) delSession(id int64) *sessionItem {
 	}
 	return nil
 }
-func (s *sessionManager) addSession(conn *websocket.Conn) {
+func (s *sessionManager) addSession(conn net.Conn) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	item := sessionItem{
 		Session: session.NewSession(conn, true),
 		t:       nil,
@@ -239,6 +247,7 @@ func (s *sessionManager) addSession(conn *websocket.Conn) {
 	}
 	s.m[item.GetId()] = item
 	go s.doConnCb(item.Session)
+	go item.Session.DoConnect(25)
 }
 
 func (s *sessionManager) doConnCb(sess Session) {
@@ -264,21 +273,44 @@ func (s *sessionManager) doMsgCb(id int64, t byte, payload []byte) {
 	}
 }
 
+// serverUpgradeHandler      server端校验握手
+func serverUpgradeHandler(req *http.Request, w http.ResponseWriter, otherHandle func(req *http.Request) error) (conn net.Conn, err error) {
+	err = defaultUpgradeCheck(req)
+	if err != nil {
+		return
+	}
+	if otherHandle != nil {
+		err = otherHandle(req)
+		if err != nil {
+			return
+		}
+	}
+	hj, ok := w.(http.Hijacker)
+	if !ok {
+		return nil, errors.New("this ResponseWriter is not Hijacker")
+	}
+	conn, _, err = hj.Hijack()
+	if err != nil {
+		return nil, errors.New(fmt.Sprintf("HijackErr: %s", err.Error()))
+	}
+	return conn, nil
+}
+
 func defaultUpgradeCheck(r *http.Request) error {
 	if r.Method != http.MethodGet {
-		return websocket.ErrBadRequestMethod
+		return errors.New("bad method")
 	}
 	if !checkHttpHeaderKeyVale(r.Header, "Connection", "upgrade") {
-		return websocket.ErrBadUpgrade
+		return errors.New("missing or bad upgrade")
 	}
 	if !checkHttpHeaderKeyVale(r.Header, "Upgrade", "websocket") {
-		return websocket.ErrBadWebSocketProtocol
+		return errors.New("missing or bad WebSocket-Protocol")
 	}
 	if !checkHttpHeaderKeyVale(r.Header, "Sec-Websocket-Version", "13") {
-		return websocket.ErrBadProtocolVersion
+		return errors.New("bad protocol version")
 	}
 	if !checkSecWebsocketKey(r.Header) {
-		return &websocket.ProtocolError{ErrorString: "not a websocket handshake: 'Sec-WebSocket-Key' header must be Base64 encoded value of 16-byte in length"}
+		return errors.New("bad 'Sec-WebSocket-Key'")
 	}
 	return nil
 }

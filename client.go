@@ -1,10 +1,13 @@
 package websocket_packet
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"github.com/qdmc/websocket_packet/session"
-	"golang.org/x/net/websocket"
+	"net"
+	"net/http"
+
 	"net/url"
 	"time"
 )
@@ -25,6 +28,8 @@ ClientOptions               客户端配置
   - ConnectedCallback       链接成功后的回调
   - DisConnectCallback      断开后的回调
   - MessageCallback         接收到消息的回调
+  - RequestHeader           发送请求时携带额外的请求头
+  - RequestTime             发送请求的最大时长(秒),默认:10;最小:3;最大:60
 */
 type ClientOptions struct {
 	ReConnectMaxNum    int
@@ -32,8 +37,11 @@ type ClientOptions struct {
 	ConnectedCallback  func()
 	DisConnectCallback func(err error)
 	MessageCallback    func(byte, []byte)
+	RequestHeader      http.Header
+	RequestTime        int64
 }
 
+// NewClientOption      生成一个新的客户端配置
 func NewClientOption() *ClientOptions {
 	return &ClientOptions{
 		ReConnectMaxNum:    5,
@@ -41,6 +49,8 @@ func NewClientOption() *ClientOptions {
 		ConnectedCallback:  nil,
 		DisConnectCallback: nil,
 		MessageCallback:    nil,
+		RequestHeader:      http.Header{},
+		RequestTime:        10,
 	}
 }
 
@@ -73,6 +83,11 @@ func (o *ClientOptions) SetMessageCb(f func(byte, []byte)) *ClientOptions {
 	return o
 }
 
+// SetHeader             配置发送请求时携带额外的请求头
+func (o *ClientOptions) SetHeader(h http.Header) {
+	o.RequestHeader = h
+}
+
 // NewClient        生成一个客户端
 func NewClient(opt *ClientOptions) *Client {
 	if opt == nil {
@@ -90,10 +105,11 @@ func NewClient(opt *ClientOptions) *Client {
 // Client                 websocket客户端,只有一个 Session,并自动发送ping帧(25秒)与自动回复pong帧
 type Client struct {
 	//mu            sync.Mutex
-	opt                   *ClientOptions
-	s                     Session
-	status                ClientStatus
-	url, protocol, origin string
+	opt              *ClientOptions
+	s                Session
+	status           ClientStatus
+	url              *url.URL
+	protocol, origin string
 }
 
 // GetOptions                返回配置项
@@ -204,7 +220,42 @@ func (c *Client) dialToServer() error {
 	if c.opt == nil {
 		c.opt = NewClientOption()
 	}
-	conn, err := websocket.Dial(c.url, c.protocol, c.origin)
+	if c.opt.RequestTime < 3 || c.opt.RequestTime > 60 {
+		c.opt.RequestTime = 10
+	}
+	conn, err := net.DialTimeout("tcp", c.url.String(), time.Duration(c.opt.RequestTime)*time.Second)
+	if err != nil {
+		return err
+	}
+	req := c.makeRequest()
+	err = req.Write(conn)
+	if err != nil {
+		return err
+	}
+	bufRead := bufio.NewReaderSize(conn, 4096)
+	bufRead.Reset(conn)
+	defer func() {
+		if err != nil {
+			conn.Close()
+		}
+	}()
+	resp, err := http.ReadResponse(bufRead, req)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		return errors.New("response statusCode is not 101")
+	}
+	if !checkHttpHeaderKeyVale(resp.Header, "Upgrade", "websocket") {
+		return errors.New("response header.Upgrade is not websocket")
+	}
+	if !checkHttpHeaderKeyVale(resp.Header, "Connection", "upgrade") {
+		return errors.New("response header.Connection is not upgrade")
+	}
+	if resp.Header.Get("Sec-Websocket-Accept") != computeAcceptKey(req.Header.Get("Sec-WebSocket-Key")) {
+		return errors.New("response header.Sec-Websocket-Accept is error")
+	}
+	err = conn.SetDeadline(time.Time{})
 	if err != nil {
 		return err
 	}
@@ -223,16 +274,42 @@ func (c *Client) parseUrl(urlStr string) error {
 	if err != nil {
 		return err
 	}
+	var scheme string
 	var origin string
 	if u.Scheme == "ws" {
 		origin = fmt.Sprintf("http://%s", u.Host)
+		scheme = "http"
 	} else if u.Scheme == "wss" {
 		origin = fmt.Sprintf("https://%s", u.Host)
+		scheme = "https"
 	} else {
 		return errors.New("scheme must be ws or wss")
 	}
-	c.url = u.String()
+	u.Scheme = scheme
+	c.url = u
 	c.protocol = u.Scheme
 	c.origin = origin
 	return nil
+}
+func (c *Client) makeRequest() *http.Request {
+	req := &http.Request{
+		Method:     http.MethodGet,
+		URL:        c.url,
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     make(http.Header),
+		Host:       c.origin,
+	}
+	key, _ := generateChallengeKey()
+	req.Header["Upgrade"] = []string{"websocket"}
+	req.Header["Connection"] = []string{"Upgrade"}
+	req.Header.Add("Sec-WebSocket-Key", key)
+	req.Header["Sec-WebSocket-Version"] = []string{"13"}
+	if c.opt != nil && c.opt.RequestHeader != nil {
+		for headKey, headValue := range c.opt.RequestHeader {
+			req.Header[headKey] = headValue
+		}
+	}
+	return req
 }
