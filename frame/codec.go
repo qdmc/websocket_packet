@@ -61,3 +61,5 @@ func (defaultCodec) WriteBytes(bs []byte, c io.Writer) (writeLen int, err error)
 	writeLen, err = c.Write(bs)
 	return
 }
+
+// todo 处理close 的状态码

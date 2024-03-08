@@ -7,9 +7,7 @@ Package session  websocket链接
 package session
 
 import (
-	"encoding/hex"
 	"errors"
-	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
 	"net"
 	"net/http"
@@ -128,7 +126,6 @@ func (s *websocketSession) GetStatus() ConnectionDatabase {
 }
 
 func (s *websocketSession) doPing() {
-	fmt.Println("**** doPing")
 	s.Write(9, []byte("Hello"))
 }
 func (s *websocketSession) DoConnect(pingTickers ...int64) {
@@ -193,7 +190,6 @@ func (s *websocketSession) doFrameCallBack(f *frame.Frame) {
 	if f == nil {
 		return
 	}
-	fmt.Println("*** doFrameCallBack: ", f.Opcode)
 	if f.Opcode == 8 {
 		s.close(CloseNormalClosure)
 	} else if f.Opcode == 9 {
@@ -232,9 +228,9 @@ func (s *websocketSession) Write(frameType byte, bs []byte, keys ...uint32) (int
 			s.close(CloseWriteConnFailed)
 			return 0, err
 		}
-		if frameType == 9 {
-			fmt.Println("hex: ", hex.EncodeToString(frameBytes))
-		}
+		//if frameType == 9 {
+		//	fmt.Println("hex: ", hex.EncodeToString(frameBytes))
+		//}
 		atomic.AddUint64(s.writeLen, uint64(writeLen))
 		return writeLen, nil
 	} else {
