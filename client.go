@@ -31,6 +31,8 @@ ClientOptions               客户端配置
   - MessageCallback         接收到消息的回调
   - RequestHeader           发送请求时携带额外的请求头
   - RequestTime             发送请求的最大时长(秒),默认:10;最小:3;最大:60
+  - PingTime                自动发送pingFrame的时间(秒)配置, <1:关闭(默认值); 1~~25:都会配置为25秒; >120:都会配置为120秒
+  - IsStatistics            是否开启流量统计,默认为false
 */
 type ClientOptions struct {
 	ReConnectMaxNum    int
@@ -40,6 +42,8 @@ type ClientOptions struct {
 	MessageCallback    func(byte, []byte)
 	RequestHeader      http.Header
 	RequestTime        int64
+	PingTime           int64
+	IsStatistics       bool
 }
 
 // NewClientOption      生成一个新的客户端配置
@@ -52,6 +56,8 @@ func NewClientOption() *ClientOptions {
 		MessageCallback:    nil,
 		RequestHeader:      http.Header{},
 		RequestTime:        10,
+		PingTime:           0,
+		IsStatistics:       false,
 	}
 }
 
@@ -128,7 +134,7 @@ func (c *Client) SetOptions(opt *ClientOptions) {
 // Dial          链接到服务端
 func (c *Client) Dial(url string) error {
 	if c.status != session.ClientCreate {
-		return errors.New("client status is not SessionClientCreate")
+		return errors.New("client status is not ClientCreate")
 	}
 	err := c.parseUrl(url)
 	if err != nil {
@@ -158,7 +164,7 @@ func (c *Client) SendMessage(frameType byte, payload []byte, keys ...uint32) (in
 // Disconnect          断开与服务器链接
 func (c *Client) Disconnect() {
 	if c.s != nil {
-		c.s.DisConnect()
+		c.s.DisConnect(session.CloseNormalClosure)
 	}
 }
 
@@ -178,8 +184,11 @@ func (c *Client) disConnCb(id int64, s ClientStatus) {
 	if s == session.CloseNormalClosure {
 		c.status = session.ClientCreate
 		return
+	} else {
+		c.status = session.ClientReconnect
+		go c.reConnect()
 	}
-	go c.reConnect()
+
 }
 
 // msgCb         消息回调方法
@@ -192,14 +201,14 @@ func (c *Client) msgCb(id int64, t byte, payload []byte) {
 // reConnect     重连方法
 func (c *Client) reConnect() {
 	// 不是读写错误时,不执行reConnect
-	if c.status != session.CloseReadConnFailed && c.status != session.CloseWriteConnFailed {
+	if c.status != session.ClientReconnect {
 		return
 	}
+
 	if c.opt == nil || c.opt.ReConnectMaxNum < 0 {
 		return
 	}
 	go func() {
-		c.status = session.ClientReconnect
 		for i := 0; i <= c.opt.ReConnectMaxNum; i++ {
 			if c.opt.ReConnectMaxNum == 0 {
 				i = 0
@@ -218,6 +227,10 @@ func (c *Client) reConnect() {
 
 // dialToServer    链接到服务端
 func (c *Client) dialToServer() error {
+	if c.status != session.ClientReconnect && c.status != session.ClientCreate {
+		return errors.New("client status is error")
+	}
+
 	if c.opt == nil {
 		c.opt = NewClientOption()
 	}
@@ -238,6 +251,9 @@ func (c *Client) dialToServer() error {
 	defer func() {
 		if err != nil {
 			conn.Close()
+			c.status = session.ClientConnectFailed
+		} else {
+			c.status = session.Connected
 		}
 	}()
 	resp, err := http.ReadResponse(bufRead, req)
@@ -260,11 +276,15 @@ func (c *Client) dialToServer() error {
 	if err != nil {
 		return err
 	}
-	c.status = session.Connected
+
 	go c.connCb()
-	c.s = session.NewSession(conn)
-	c.s.SetDisConnectCallBack(c.disConnCb)
-	c.s.SetFrameCallBack(c.msgCb)
+	c.s = session.NewSession(conn, false, &session.ConfigureSession{
+		ConnectedCallBackHandle: nil,
+		DisConnectCallBack:      c.disConnCb,
+		FrameCallBackHandle:     c.msgCb,
+		IsStatistics:            c.opt.IsStatistics,
+		AutoPingTicker:          c.opt.PingTime,
+	})
 	go c.s.DoConnect()
 	return nil
 }

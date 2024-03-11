@@ -263,7 +263,7 @@ func NewPongFrame(bs []byte, keys ...uint32) *Frame {
 		isKey = true
 	}
 	frame := new(Frame)
-	frame.SetFin(0x02)
+	frame.SetFin(0x01)
 	frame.SetOpcode(0x0A)
 	if isKey {
 		frame.SetMaskingKey(key)
@@ -306,7 +306,7 @@ func NewCloseFrame(status ...CloseStatus) *Frame {
 		s = status[0]
 	}
 	frame := new(Frame)
-	frame.SetFin(0x02)
+	frame.SetFin(0x01)
 	frame.SetOpcode(0x08)
 	frame.Masked = 0
 	frame.SetPayload(enCodeUint16(uint16(s)))

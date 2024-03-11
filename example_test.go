@@ -9,9 +9,43 @@ import (
 	"testing"
 )
 
+func ExampleNewClient() {
+	// 配置一个请求的header,将在服务的链接成功回调中获取到
+	var dialHeader http.Header
+	dialHeader.Add("token", "my_token_xxx")
+	client := NewClient(&ClientOptions{
+		ReConnectMaxNum:    3,
+		ReConnectInterval:  5,
+		ConnectedCallback:  clientConnectedCallback,
+		DisConnectCallback: clientDisConnectCallback,
+		MessageCallback:    clientMsgCallback,
+		RequestHeader:      dialHeader,
+		RequestTime:        30,
+		PingTime:           25,
+		IsStatistics:       false,
+	})
+	err := client.Dial("ws://127.0.0.1:8080")
+	if err != nil {
+		fmt.Println("dialErr: ", err.Error())
+	}
+}
+
 func ExampleNewServerHandle() {
+	serv := NewServerHandle()
+	// 配置回调
+	serv.SetCallbacks(&CallbackHandles{
+		ConnectedCallBackHandle:  connectedCb,
+		DisConnectCallBackHandle: disconnectCb,
+		FrameCallBackHandle:      msgCb,
+	})
+	// 配置超时
+	serv.SetTimeOut(60)
+	// 配置自动发送ping帧
+	serv.SetPingTime(10)
+	// 配置打开数据统计
+	serv.SetStatistics(true)
 	// ServerHandlerInterface 可以做为一个Http.HandlerFunc使用
-	http.Handle("/websocket", NewServerHandle())
+	http.Handle("/websocket", serv)
 	http.ListenAndServe(":8080", nil)
 }
 
@@ -32,6 +66,8 @@ func Test_server(t *testing.T) {
 	//}()
 	server.SetCallbacks(cbs)
 	server.SetTimeOut(60)
+	server.SetPingTime(10)
+	server.SetStatistics(true)
 	http.Handle("/websocket", server)
 	addr := ":8081"
 	println("http start at ", addr, " ......")
@@ -42,10 +78,28 @@ func Test_server(t *testing.T) {
 
 }
 
+func clientConnectedCallback() {
+
+}
+
+func clientDisConnectCallback(e error) {
+
+}
+
+func clientMsgCallback(t byte, bs []byte) {
+
+}
+
 func connectedCb(id int64, header http.Header) {
 	println("connected: ", id)
 	go func() {
-
+		//time.Sleep(25 * time.Second)
+		//fmt.Println("--- Disconnect ", id)
+		//err := server.DisConnect(id)
+		//if err != nil {
+		//	fmt.Println("err: ", err)
+		//	os.Exit(1)
+		//}
 	}()
 }
 
@@ -58,9 +112,9 @@ func disconnectCb(id int64, s frame.CloseStatus) {
 }
 
 func msgCb(id int64, t byte, bs []byte) {
-	//println("acceptFrame: ", id)
-	//println("acceptFrame: ", t)
-	//println("acceptFrame: ", string(bs))
+	println("acceptFrame: ", id)
+	println("acceptFrame: ", t)
+	println("acceptFrame: ", string(bs))
 }
 
 func Test_ping(t *testing.T) {

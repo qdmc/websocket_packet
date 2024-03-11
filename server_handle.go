@@ -35,15 +35,18 @@ ServerHandlerInterface 实现的业务
   - 消息的接收与发送
 */
 type ServerHandlerInterface interface {
-	SetCallbacks(*CallbackHandles)                           // 配置回调
-	Len() int                                                // 返回客户端(Session)总数
-	GetSessionOnce(id int64) (Session, error)                // 获取一个 Session
-	GetSessionRange(start, end uint64) []Session             // 获取获取 Session 列表
-	GetSessionWithIds(ids ...int64) map[int64]Session        // 获取获取 Session 列表
-	DisConnect(id int64, status ...frame.CloseStatus) error  // 断开一个 Session
-	SetTimeOut(i int64)                                      // 配置 Session 超时,在 Len()==0时有效
-	ServeHTTP(w http.ResponseWriter, req *http.Request)      // 实现net.http.Handler
-	SetHandshakeCheckHandle(f func(req *http.Request) error) // 配置一个校验的握手的handle
+	SetCallbacks(*CallbackHandles)                                                     // 配置回调
+	Len() int                                                                          // 返回客户端(Session)总数
+	GetSessionOnce(id int64) (Session, error)                                          // 获取一个 Session
+	GetSessionRange(start, end uint64) []Session                                       // 获取获取 Session 列表
+	GetSessionWithIds(ids ...int64) map[int64]Session                                  // 获取获取 Session 列表
+	DisConnect(id int64) error                                                         // 断开一个 Session
+	ServeHTTP(w http.ResponseWriter, req *http.Request)                                // 实现net.http.Handler
+	SetHandshakeCheckHandle(f func(req *http.Request) error)                           // 配置一个校验的握手的handle
+	SendMessage(id int64, frameType byte, payload []byte, keys ...uint32) (int, error) // 发送消息到客户端
+	SetStatistics(b bool)                                                              // 是否开启流量统计,在执行ServeHTTP之前有效,默认为false
+	SetPingTime(t int64)                                                               // 配置自动发送pingFrame的时间(秒),在执行ServeHTTP之前有效,<1:关闭(默认值); 1~~25:都会配置为25秒; >120:都会配置为120秒
+	SetTimeOut(i int64)                                                                // 配置 Session 超时,在执行ServeHTTP之前有效
 }
 
 // NewServerHandle      生成一个全局唯一的 ServerHandlerInterface
@@ -94,6 +97,31 @@ type sessionManager struct {
 	m                    map[int64]sessionItem
 	handshakeCheckHandle func(req *http.Request) error
 	timeOutSecond        int64
+	pingTime             int64
+	isServerHttp         bool
+	isStatistics         bool
+}
+
+func (s *sessionManager) SetStatistics(b bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isServerHttp {
+		s.isStatistics = b
+	}
+}
+func (s *sessionManager) SetPingTime(t int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.isServerHttp {
+		s.pingTime = t
+	}
+}
+func (s *sessionManager) SendMessage(id int64, frameType byte, payload []byte, keys ...uint32) (int, error) {
+	sess, err := s.GetSessionOnce(id)
+	if err != nil {
+		return 0, err
+	}
+	return sess.Write(frameType, payload, keys...)
 }
 
 func (s *sessionManager) SetHandshakeCheckHandle(f func(req *http.Request) error) {
@@ -163,11 +191,11 @@ func (s *sessionManager) GetSessionWithIds(ids ...int64) map[int64]Session {
 	return res
 }
 
-func (s *sessionManager) DisConnect(id int64, status ...frame.CloseStatus) error {
+func (s *sessionManager) DisConnect(id int64) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if item, ok := s.m[id]; ok {
-		go item.DisConnect(status...)
+		go item.DisConnect(session.CloseNormalClosure)
 		return nil
 	} else {
 		return errors.New(fmt.Sprintf("not found session with id(%b)", id))
@@ -178,13 +206,17 @@ func (s *sessionManager) DisConnect(id int64, status ...frame.CloseStatus) error
 func (s *sessionManager) SetTimeOut(i int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if len(s.m) == 0 {
+	if !s.isServerHttp {
 		s.timeOutSecond = i
 	}
 }
 
 // ServeHTTP            实现Http.HandlerFunc
 func (s *sessionManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
+	if s.isServerHttp {
+		return
+	}
+	s.isServerHttp = true
 	var conn net.Conn
 	var err error
 	conn, err = serverUpgradeHandler(req, w, s.handshakeCheckHandle)
@@ -208,7 +240,6 @@ func (s *sessionManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if err != nil {
 		return
 	}
-
 	go s.addSession(conn, req.Header)
 }
 func (s *sessionManager) doTimeOut(id int64) {
@@ -236,10 +267,14 @@ func (s *sessionManager) delSession(id int64) *sessionItem {
 func (s *sessionManager) addSession(conn net.Conn, header http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	sess := session.NewSession(conn, true)
+	sess := session.NewSession(conn, true, &session.ConfigureSession{
+		ConnectedCallBackHandle: nil,
+		DisConnectCallBack:      s.doDisConnCb,
+		FrameCallBackHandle:     s.doMsgCb,
+		IsStatistics:            s.isStatistics,
+		AutoPingTicker:          s.pingTime,
+	})
 	sessionId := sess.GetId()
-	sess.SetFrameCallBack(s.doMsgCb)
-	sess.SetDisConnectCallBack(s.doDisConnCb)
 	item := sessionItem{
 		Session: sess,
 		t:       nil,
@@ -251,7 +286,7 @@ func (s *sessionManager) addSession(conn net.Conn, header http.Header) {
 	}
 	s.m[sessionId] = item
 	go s.doConnCb(sessionId, header)
-	go item.Session.DoConnect(25)
+	go item.Session.DoConnect()
 }
 
 func (s *sessionManager) doConnCb(id int64, header http.Header) {

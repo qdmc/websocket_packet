@@ -2,7 +2,6 @@ package frame
 
 import (
 	"errors"
-	"fmt"
 	"io"
 )
 
@@ -84,8 +83,7 @@ const (
 	SessionClientCreate    CloseStatus = 3000 //  新增自定义状态:客户端建立
 	SessionClientReconnect CloseStatus = 3001 //  新增自定义状态:客户端重新链接
 	SessionConnected       CloseStatus = 3002 //  新增自定义状态:正常连接。
-	SessionHartTimeOut     CloseStatus = 3004 //  新增自定义状态:心跳超时
-	SessionWriteConnFailed CloseStatus = 3006 //  新增自定义状态:写入失败
+	SessionConnectFailed   CloseStatus = 3003 //  新增自定义状态:链接失败
 )
 
 // StatusToError    状态转换成 error
@@ -99,6 +97,8 @@ func StatusToError(s CloseStatus) error {
 		return nil
 	case CloseNormalClosure:
 		return nil
+	case SessionConnectFailed:
+		return errors.New("3003: client dial failed")
 	case 1001:
 		return errors.New("1001: Going Away")
 	case 1002:
@@ -125,10 +125,6 @@ func StatusToError(s CloseStatus) error {
 		return errors.New("1013: Try Again Later")
 	case 1015:
 		return errors.New("1015: TLS handshake")
-	case SessionHartTimeOut:
-		return errors.New(fmt.Sprintf("%d: Heartbeat Timeout,close connection", SessionHartTimeOut))
-	case SessionWriteConnFailed:
-		return errors.New(fmt.Sprintf("%d: Write to connection failed,close connection", SessionWriteConnFailed))
 	}
 	return errors.New("unknown errors")
 }

@@ -7,6 +7,7 @@ Package session  websocket链接
 package session
 
 import (
+	"encoding/binary"
 	"errors"
 	"github.com/qdmc/websocket_packet/frame"
 	"net"
@@ -33,6 +34,7 @@ type ConnectionDatabase struct {
 	SendLength    uint64 // 发送的数据长度
 	WriteLength   uint64 // 接收的数据长度
 	Status        Status // 状态
+	IsStatistics  bool   // 是否开启流量统计,默认为false
 }
 
 /*
@@ -42,8 +44,6 @@ WebsocketSessionInterface                            session通用接口
   - GetStatus() Status                               返回session状态
   - DoConnect(autoPingTicker ...int64)               执行conn的读取,autoPingTicker:自动发送pingFrame的ticker,>=10为有效值,默认是25秒
   - Write(frameType byte, bs []byte, keys ...uint32) 写入消息:frameType(消息类型,1,2,9,10 为有效值)
-  - SetDisConnectCallBack(DisConnectCallBackHandle)        设置链接断开的回调
-  - SetFrameCallBack(FrameCallBackHandle)                  设置报文帧的回调
   - DisConnect()                                     主动关闭链接
 */
 type WebsocketSessionInterface interface {
@@ -51,39 +51,54 @@ type WebsocketSessionInterface interface {
 	GetConn() net.Conn
 	IsServer() bool
 	GetStatus() ConnectionDatabase
-	DoConnect(autoPingTicker ...int64)
+	DoConnect()
 	Write(frameType byte, bs []byte, keys ...uint32) (int, error)
-	SetDisConnectCallBack(DisConnectCallBackHandle)
-	SetFrameCallBack(FrameCallBackHandle)
 	DisConnect(status ...Status)
 }
 
 /*
 NewSession                     生成一个 WebsocketSessionInterface
-  - 这里的net.Conn默认是*net.TCPCon,不能兼容golang.org/x/net/websocket中的Conn
-  - isServer 来标识客户端与服务端,但session并没有处理握手
-  - 默认的是客户端session,服务端session会分配一个全局唯一的id
+  - conn 这里的net.Conn默认是*net.TCPCon,不能兼容golang.org/x/net/websocket中的Conn
+  - isServer 来标识客户端与服务端,但session并没有处理握手,默认的是客户端session,服务端session会分配一个全局唯一的id
+  - isStatistics 是否开启流量统计,
+  - pintTicker   自动发送pingFrame的时间(秒)配置,
 */
-func NewSession(c net.Conn, isServer ...bool) WebsocketSessionInterface {
+func NewSession(conn net.Conn, isServer bool, opt *ConfigureSession) WebsocketSessionInterface {
 	id := int64(0)
-	isServ := false
-	if isServer != nil && len(isServer) == 1 && isServer[0] {
+	if isServer {
 		id = getSessionId()
-		isServ = true
 	}
 	var rLen, wLen uint64
-	return &websocketSession{
-		id:         id,
-		isServer:   isServ,
-		mu:         sync.Mutex{},
-		conn:       c,
-		status:     Connected,
-		stopChan:   make(chan struct{}, 1),
-		pingTicker: nil,
-		startNano:  time.Now().UnixNano(),
-		readLen:    &rLen,
-		writeLen:   &wLen,
+	sess := &websocketSession{
+		id:           id,
+		isServer:     isServer,
+		mu:           sync.Mutex{},
+		conn:         conn,
+		status:       Connected,
+		stopChan:     make(chan struct{}, 1),
+		pingTime:     0,
+		pingTicker:   nil,
+		isStatistics: false,
+		startNano:    time.Now().UnixNano(),
+		readLen:      &rLen,
+		writeLen:     &wLen,
 	}
+	if opt != nil {
+		sess.isStatistics = opt.IsStatistics
+		sess.connectedCb = opt.ConnectedCallBackHandle
+		sess.disConnectCb = opt.DisConnectCallBack
+		sess.frameCb = opt.FrameCallBackHandle
+		if opt.AutoPingTicker >= 1 {
+			if opt.AutoPingTicker >= 120 {
+				opt.AutoPingTicker = 120
+			}
+			if opt.AutoPingTicker <= 25 {
+				opt.AutoPingTicker = 25
+			}
+			sess.pingTime = opt.AutoPingTicker
+		}
+	}
+	return sess
 }
 
 type websocketSession struct {
@@ -96,8 +111,10 @@ type websocketSession struct {
 	disConnectCb      DisConnectCallBackHandle
 	frameCb           FrameCallBackHandle
 	stopChan          chan struct{}
+	pingTime          int64
 	pingTicker        *time.Ticker
 	continuationFrame *frame.Frame
+	isStatistics      bool
 	startNano         int64
 	closeNano         int64
 	readLen           *uint64
@@ -122,13 +139,14 @@ func (s *websocketSession) GetStatus() ConnectionDatabase {
 		SendLength:    atomic.LoadUint64(s.readLen),
 		WriteLength:   atomic.LoadUint64(s.writeLen),
 		Status:        s.status,
+		IsStatistics:  s.isStatistics,
 	}
 }
 
 func (s *websocketSession) doPing() {
 	s.Write(9, []byte("Hello"))
 }
-func (s *websocketSession) DoConnect(pingTickers ...int64) {
+func (s *websocketSession) DoConnect() {
 	if s.status != Connected {
 		return
 	}
@@ -141,46 +159,86 @@ func (s *websocketSession) DoConnect(pingTickers ...int64) {
 		s.conn.Close()
 		s.close(status)
 	}()
-	d := 25 * time.Second
-	if pingTickers != nil && len(pingTickers) == 1 && pingTickers[0] >= 10 {
-		d = time.Duration(pingTickers[0]) * time.Second
-	}
-	s.pingTicker = time.NewTicker(d)
-	for {
-		select {
-		case <-s.stopChan:
-			return
-		case <-s.pingTicker.C:
-			go s.doPing()
-			continue
-		default:
-			readLen, f, readStatus := frame.ReadOnceFrame(s.conn)
-			if readStatus != frame.CloseNormalClosure {
-				status = readStatus
+	if s.pingTime >= 1 {
+		s.pingTicker = time.NewTicker(time.Duration(s.pingTime) * time.Second)
+		for {
+			select {
+			case <-s.stopChan:
 				return
-			} else {
-				atomic.AddUint64(s.readLen, uint64(readLen))
-				// 处理分包合并,Fin为1时,表示最后一个分包
-				if f.Fin == 0 {
-					if s.continuationFrame == nil {
-						s.continuationFrame = f
-					} else {
-						s.continuationFrame.PayloadData = append(s.continuationFrame.PayloadData, f.PayloadData...)
-					}
-				} else {
-					// 这里合并分包,并弹出
-					if s.continuationFrame != nil {
-						composeFrame := new(frame.Frame)
-						composeFrame.SetOpcode(f.Opcode)
-						composeFrame.SetPayload(append(s.continuationFrame.PayloadData, f.PayloadData...))
-						s.continuationFrame = nil
-						go s.doFrameCallBack(composeFrame)
-					} else {
-						go s.doFrameCallBack(f)
-					}
-
-				}
+			case <-s.pingTicker.C:
+				go s.doPing()
 				continue
+			default:
+				readLen, f, readStatus := frame.ReadOnceFrame(s.conn)
+				if readStatus != frame.CloseNormalClosure {
+					status = readStatus
+					return
+				} else {
+					// 流量统计
+					if s.isStatistics {
+						atomic.AddUint64(s.readLen, uint64(readLen))
+					}
+					// 处理分包合并,Fin为1时,表示最后一个分包
+					if f.Fin == 0 {
+						if s.continuationFrame == nil {
+							s.continuationFrame = f
+						} else {
+							s.continuationFrame.PayloadData = append(s.continuationFrame.PayloadData, f.PayloadData...)
+						}
+					} else {
+						// 这里合并分包,并弹出
+						if s.continuationFrame != nil {
+							composeFrame := new(frame.Frame)
+							composeFrame.SetOpcode(f.Opcode)
+							composeFrame.SetPayload(append(s.continuationFrame.PayloadData, f.PayloadData...))
+							s.continuationFrame = nil
+							go s.doFrameCallBack(composeFrame)
+						} else {
+							go s.doFrameCallBack(f)
+						}
+
+					}
+					continue
+				}
+			}
+		}
+	} else {
+		for {
+			select {
+			case <-s.stopChan:
+				return
+			default:
+				readLen, f, readStatus := frame.ReadOnceFrame(s.conn)
+				if readStatus != frame.CloseNormalClosure {
+					status = readStatus
+					return
+				} else {
+					// 流量统计
+					if s.isStatistics {
+						atomic.AddUint64(s.readLen, uint64(readLen))
+					}
+					// 处理分包合并,Fin为1时,表示最后一个分包
+					if f.Fin == 0 {
+						if s.continuationFrame == nil {
+							s.continuationFrame = f
+						} else {
+							s.continuationFrame.PayloadData = append(s.continuationFrame.PayloadData, f.PayloadData...)
+						}
+					} else {
+						// 这里合并分包,并弹出
+						if s.continuationFrame != nil {
+							composeFrame := new(frame.Frame)
+							composeFrame.SetOpcode(f.Opcode)
+							composeFrame.SetPayload(append(s.continuationFrame.PayloadData, f.PayloadData...))
+							s.continuationFrame = nil
+							go s.doFrameCallBack(composeFrame)
+						} else {
+							go s.doFrameCallBack(f)
+						}
+
+					}
+					continue
+				}
 			}
 		}
 	}
@@ -191,9 +249,15 @@ func (s *websocketSession) doFrameCallBack(f *frame.Frame) {
 		return
 	}
 	if f.Opcode == 8 {
-		s.close(CloseNormalClosure)
+		status := CloseNormalClosure
+		if f.PayloadData != nil && len(f.PayloadData) > 2 {
+			status = Status(binary.BigEndian.Uint16(f.PayloadData[0:2]))
+		}
+		s.close(status)
 	} else if f.Opcode == 9 {
 		s.Write(10, f.PayloadData)
+	} else if f.Opcode == 10 {
+		return
 	} else {
 		if s.frameCb != nil {
 			go s.frameCb(s.GetId(), f.Opcode, f.PayloadData)
@@ -228,9 +292,6 @@ func (s *websocketSession) Write(frameType byte, bs []byte, keys ...uint32) (int
 			s.close(CloseWriteConnFailed)
 			return 0, err
 		}
-		//if frameType == 9 {
-		//	fmt.Println("hex: ", hex.EncodeToString(frameBytes))
-		//}
 		atomic.AddUint64(s.writeLen, uint64(writeLen))
 		return writeLen, nil
 	} else {
@@ -254,9 +315,14 @@ func (s *websocketSession) SetFrameCallBack(back FrameCallBackHandle) {
 
 func (s *websocketSession) DisConnect(status ...Status) {
 	if s.status == Connected {
-		bs, _ := frame.NewCloseFrame(frame.ClosePolicyViolation).ToBytes()
+		bs, _ := frame.NewCloseFrame(status...).ToBytes()
 		s.conn.Write(bs)
-		s.close(CloseHartTimeOut)
+		if status != nil && len(status) == 1 {
+			s.close(status[0])
+		} else {
+			s.close(CloseNormalClosure)
+		}
+
 	}
 
 }
@@ -264,7 +330,7 @@ func (s *websocketSession) close(status Status) {
 	s.mu.Lock()
 	s.mu.Unlock()
 	if s.status == Connected {
-		if status == CloseNormalClosure || status == CloseReadConnFailed || status == CloseWriteConnFailed || CloseHartTimeOut == status {
+		if status == CloseNormalClosure || status == CloseReadConnFailed || CloseHartTimeOut == status {
 			close(s.stopChan)
 		}
 		s.status = status
