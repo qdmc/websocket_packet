@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
-	"github.com/qdmc/websocket_packet/session"
 	"net/http"
 	"testing"
 )
@@ -50,11 +49,11 @@ func connectedCb(id int64, header http.Header) {
 	}()
 }
 
-func disconnectCb(id int64, s ClientStatus) {
+func disconnectCb(id int64, s frame.CloseStatus) {
 	println("disconnect: ", id)
-	err := session.StatusToError(s)
+	err := frame.StatusToError(s)
 	if err != nil {
-		println(err.Error())
+		println("disconnectErr:  ", err.Error())
 	}
 }
 
@@ -72,9 +71,9 @@ func Test_ping(t *testing.T) {
 	//}
 	bs := []byte{0x89, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f}
 	fmt.Println("hexString: ", hex.EncodeToString(bs))
-	_, f, err := frame.ReadOnceFrame(bytes.NewReader(bs))
-	if err != nil {
-		t.Fatal("ReadOnceFrame: ", err.Error())
+	_, f, readErr := frame.ReadOnceFrame(bytes.NewReader(bs))
+	if frame.StatusToError(readErr) != nil {
+		t.Fatal("ReadOnceFrame: ", frame.StatusToError(readErr).Error())
 	}
 	fmt.Println("s1 :", f.ToString())
 	if f.Opcode != 9 {
@@ -93,9 +92,9 @@ func Test_ping(t *testing.T) {
 
 func Test_Pong(t *testing.T) {
 	bs := []byte{0x8a, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58}
-	_, f, err := frame.ReadOnceFrame(bytes.NewReader(bs))
-	if err != nil {
-		t.Fatal("ReadOnceFrame: ", err.Error())
+	_, f, readErr := frame.ReadOnceFrame(bytes.NewReader(bs))
+	if frame.StatusToError(readErr) != nil {
+		t.Fatal("ReadOnceFrame: ", frame.StatusToError(readErr).Error())
 	}
 	fmt.Println("s1 :", f.ToString())
 	if f.Opcode != 10 {

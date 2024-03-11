@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/qdmc/websocket_packet/frame"
 	"github.com/qdmc/websocket_packet/session"
 	"net"
 	"net/http"
@@ -127,7 +128,7 @@ func (c *Client) SetOptions(opt *ClientOptions) {
 // Dial          链接到服务端
 func (c *Client) Dial(url string) error {
 	if c.status != session.ClientCreate {
-		return errors.New("client status is not ClientCreate")
+		return errors.New("client status is not SessionClientCreate")
 	}
 	err := c.parseUrl(url)
 	if err != nil {
@@ -172,7 +173,7 @@ func (c *Client) connCb() {
 func (c *Client) disConnCb(id int64, s ClientStatus) {
 	c.status = s
 	if c.opt != nil && c.opt.DisConnectCallback != nil {
-		go c.opt.DisConnectCallback(session.StatusToError(s))
+		go c.opt.DisConnectCallback(frame.StatusToError(s))
 	}
 	if s == session.CloseNormalClosure {
 		c.status = session.ClientCreate

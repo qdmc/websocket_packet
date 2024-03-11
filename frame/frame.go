@@ -111,11 +111,11 @@ func (f *Frame) SetMaskingKey(key uint32) {
 }
 
 // read         读取一个webSocket帧,返回读取的长度
-func (f *Frame) read(r io.Reader) (int, error) {
+func (f *Frame) read(r io.Reader) (int, CloseStatus) {
 	var n int
 	firstByte, err := readByte(r)
 	if err != nil {
-		return n, errors.New(fmt.Sprintf("read first Byte error: %s", err.Error()))
+		return n, CloseGoingAway
 	}
 	n += 1
 	f.Fin = firstByte >> 7
@@ -125,7 +125,7 @@ func (f *Frame) read(r io.Reader) (int, error) {
 	f.Opcode = firstByte << 4 >> 4
 	secondByte, err := readByte(r)
 	if err != nil {
-		return n, errors.New(fmt.Sprintf("read second Byte error: %s", err.Error()))
+		return n, CloseGoingAway
 	}
 	n += 1
 	f.Masked = secondByte >> 7
@@ -136,27 +136,27 @@ func (f *Frame) read(r io.Reader) (int, error) {
 	} else if length == 0x7E {
 		length32, u16Err := readUint16(r)
 		if u16Err != nil {
-			return n, errors.New(fmt.Sprintf("read uint16 length error: %s", u16Err.Error()))
+			return n, CloseGoingAway
 		}
 		n += 2
 		f.PayloadLength = uint64(length32)
 	} else if length == 0x7F {
 		length64, u64Err := readUint64(r)
 		if u64Err != nil {
-			return n, errors.New(fmt.Sprintf("read uint64 length error: %s", u64Err.Error()))
+			return n, CloseGoingAway
 		}
 		if length64 > PayloadMaxLength {
-			return n, errors.New(fmt.Sprintf("read uint64 length >  %d", PayloadMaxLength))
+			return n, CloseMessageTooBig
 		}
 		n += 8
 		f.PayloadLength = length64
 	} else {
-		return n, errors.New("frame PayloadLength is error")
+		return n, CloseInvalidFramePayloadData
 	}
 	if f.Masked == 0x01 {
 		key, keyErr := readUint32(r)
 		if keyErr != nil {
-			return n, errors.New(fmt.Sprintf("read MaskingKey error: %s", keyErr.Error()))
+			return n, CloseGoingAway
 		}
 		n += 4
 		f.MaskingKey = key
@@ -164,7 +164,7 @@ func (f *Frame) read(r io.Reader) (int, error) {
 	if f.PayloadLength > 0 {
 		dataBytes, payloadErr := readBytes(r, int(f.PayloadLength))
 		if payloadErr != nil {
-			return n, errors.New(fmt.Sprintf("read Payload error: %s", payloadErr.Error()))
+			return n, CloseGoingAway
 		}
 		n += int(f.PayloadLength)
 		if f.Masked == 0x01 {
@@ -173,31 +173,27 @@ func (f *Frame) read(r io.Reader) (int, error) {
 			f.PayloadData = dataBytes
 		}
 	}
-	return n, nil
+	return n, CloseNormalClosure
 }
 
 // ReadOnceFrame             阻塞模式下读取一个 Frame
-func ReadOnceFrame(r io.Reader) (int, *Frame, error) {
+func ReadOnceFrame(r io.Reader) (int, *Frame, CloseStatus) {
 	f := new(Frame)
-	readLen, err := f.read(r)
-	if err != nil {
-		return readLen, nil, err
-	}
-	return readLen, f, nil
+	readLen, status := f.read(r)
+	return readLen, f, status
 }
 
 // ReadStreamBufferBytes    读取缓冲区的字节流
-func ReadStreamBufferBytes(framesBytes []byte) ([]*Frame, []byte, error) {
+func ReadStreamBufferBytes(framesBytes []byte) ([]*Frame, []byte, CloseStatus) {
 	if framesBytes == nil && len(framesBytes) < 1 {
-		return nil, nil, errors.New("frames bytes is empty")
+		return nil, nil, CloseNormalClosure
 	}
 	var list []*Frame
-	var err error
 	var frameLength, maskedLen int
 	var payloadLen, masked byte
 	for {
 		if len(framesBytes) < 2 {
-			return list, framesBytes, nil
+			return list, framesBytes, CloseNormalClosure
 		}
 		masked = framesBytes[1] >> 7
 		if masked == 0x01 {
@@ -210,28 +206,28 @@ func ReadStreamBufferBytes(framesBytes []byte) ([]*Frame, []byte, error) {
 			frameLength = 2 + int(payloadLen) + maskedLen
 		} else if payloadLen == 0x7E {
 			if len(framesBytes) < 4 {
-				return list, framesBytes, nil
+				return list, framesBytes, CloseNormalClosure
 			}
 			frameLength = 2 + int(binary.BigEndian.Uint64([]byte{framesBytes[2], framesBytes[3]})) + maskedLen
 		} else if payloadLen == 0x7F {
 			if len(framesBytes) < 10 {
-				return list, framesBytes, nil
+				return list, framesBytes, CloseNormalClosure
 			}
 			frameLength = 2 + int(binary.BigEndian.Uint64(framesBytes[2:10])) + maskedLen
 		}
 		if len(framesBytes) < frameLength {
-			return list, framesBytes, nil
+			return list, framesBytes, CloseNormalClosure
 		}
 		frameBS := framesBytes[0:frameLength]
 		f := new(Frame)
-		_, err = f.read(bytes.NewReader(frameBS))
-		if err != nil {
-			return list, framesBytes, err
+		_, readStatus := f.read(bytes.NewReader(frameBS))
+		if readStatus != CloseNormalClosure {
+			return list, framesBytes, readStatus
 		}
 		list = append(list, f)
 		framesBytes = framesBytes[frameLength:]
 		if len(framesBytes) < 1 {
-			return list, framesBytes, nil
+			return list, framesBytes, CloseNormalClosure
 		} else {
 			continue
 		}
@@ -304,23 +300,16 @@ func NewPingFrame(bs []byte, keys ...uint32) *Frame {
 }
 
 // NewCloseFrame              生成一个关闭消息帧
-func NewCloseFrame(bs []byte, keys ...uint32) *Frame {
-	if bs != nil && len(bs) > 125 {
-		bs = bs[0:125]
-	}
-	var key uint32
-	var isKey bool
-	if keys != nil && len(keys) == 1 {
-		key = keys[0]
-		isKey = true
+func NewCloseFrame(status ...CloseStatus) *Frame {
+	s := CloseNormalClosure
+	if status != nil && len(status) == 1 {
+		s = status[0]
 	}
 	frame := new(Frame)
 	frame.SetFin(0x02)
 	frame.SetOpcode(0x08)
-	if isKey {
-		frame.SetMaskingKey(key)
-	}
-	frame.SetPayload(bs)
+	frame.Masked = 0
+	frame.SetPayload(enCodeUint16(uint16(s)))
 	return frame
 }
 
@@ -480,9 +469,9 @@ func AutoTextFramesBytes(bs []byte, keys ...uint32) ([]byte, error) {
 }
 
 // CheckFrameType      校验帧的类型
-func CheckFrameType(b byte) error {
+func CheckFrameType(b byte) CloseStatus {
 	if b == 0x00 || b == 0x01 || b == 0x08 || b == 0x09 || b == 0x0A {
-		return nil
+		return CloseNormalClosure
 	}
-	return errors.New("frame type is error")
+	return CloseUnsupportedData
 }

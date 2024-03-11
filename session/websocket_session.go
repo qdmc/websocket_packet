@@ -55,7 +55,7 @@ type WebsocketSessionInterface interface {
 	Write(frameType byte, bs []byte, keys ...uint32) (int, error)
 	SetDisConnectCallBack(DisConnectCallBackHandle)
 	SetFrameCallBack(FrameCallBackHandle)
-	DisConnect(isTimeOut ...bool)
+	DisConnect(status ...Status)
 }
 
 /*
@@ -154,9 +154,9 @@ func (s *websocketSession) DoConnect(pingTickers ...int64) {
 			go s.doPing()
 			continue
 		default:
-			readLen, f, err := frame.ReadOnceFrame(s.conn)
-			if err != nil {
-				status = CloseReadConnFailed
+			readLen, f, readStatus := frame.ReadOnceFrame(s.conn)
+			if readStatus != frame.CloseNormalClosure {
+				status = readStatus
 				return
 			} else {
 				atomic.AddUint64(s.readLen, uint64(readLen))
@@ -252,16 +252,11 @@ func (s *websocketSession) SetFrameCallBack(back FrameCallBackHandle) {
 	s.frameCb = back
 }
 
-func (s *websocketSession) DisConnect(isTimeOut ...bool) {
+func (s *websocketSession) DisConnect(status ...Status) {
 	if s.status == Connected {
-		bs, _ := frame.NewCloseFrame(nil).ToBytes()
+		bs, _ := frame.NewCloseFrame(frame.ClosePolicyViolation).ToBytes()
 		s.conn.Write(bs)
-		if isTimeOut != nil && len(isTimeOut) == 1 && isTimeOut[0] {
-			s.close(CloseHartTimeOut)
-		} else {
-			s.close(CloseNormalClosure)
-		}
-
+		s.close(CloseHartTimeOut)
 	}
 
 }

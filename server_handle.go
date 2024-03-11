@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"github.com/qdmc/websocket_packet/frame"
 	"github.com/qdmc/websocket_packet/session"
 	"io"
 	"net"
@@ -39,7 +40,7 @@ type ServerHandlerInterface interface {
 	GetSessionOnce(id int64) (Session, error)                // 获取一个 Session
 	GetSessionRange(start, end uint64) []Session             // 获取获取 Session 列表
 	GetSessionWithIds(ids ...int64) map[int64]Session        // 获取获取 Session 列表
-	DisConnect(id int64) error                               // 断开一个 Session
+	DisConnect(id int64, status ...frame.CloseStatus) error  // 断开一个 Session
 	SetTimeOut(i int64)                                      // 配置 Session 超时,在 Len()==0时有效
 	ServeHTTP(w http.ResponseWriter, req *http.Request)      // 实现net.http.Handler
 	SetHandshakeCheckHandle(f func(req *http.Request) error) // 配置一个校验的握手的handle
@@ -162,11 +163,11 @@ func (s *sessionManager) GetSessionWithIds(ids ...int64) map[int64]Session {
 	return res
 }
 
-func (s *sessionManager) DisConnect(id int64) error {
+func (s *sessionManager) DisConnect(id int64, status ...frame.CloseStatus) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if item, ok := s.m[id]; ok {
-		go item.DisConnect()
+		go item.DisConnect(status...)
 		return nil
 	} else {
 		return errors.New(fmt.Sprintf("not found session with id(%b)", id))
@@ -216,7 +217,8 @@ func (s *sessionManager) doTimeOut(id int64) {
 		if item.t != nil {
 			item.t.Stop()
 		}
-		item.Session.DisConnect(true)
+		// 如果是超时,给出 1008 状态码,(1008): 协议违规，表示违反了协议的约束或策略
+		item.Session.DisConnect(frame.ClosePolicyViolation)
 	}
 }
 func (s *sessionManager) delSession(id int64) *sessionItem {

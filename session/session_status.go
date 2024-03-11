@@ -1,36 +1,18 @@
 package session
 
 import (
-	"errors"
-	"fmt"
+	"github.com/qdmc/websocket_packet/frame"
 )
 
 // Status        session状态
-type Status byte
+type Status = frame.CloseStatus
 
 const (
-	ClientCreate         Status = 0 //  客户端建立
-	ClientReconnect      Status = 1 //  客户端重新链接
-	Connected            Status = 2 //  正常连接。
-	CloseNormalClosure   Status = 3 //  正常关闭连接。
-	CloseHartTimeOut     Status = 4 //  心跳超时
-	CloseReadConnFailed  Status = 5 //  读取失败
-	CloseWriteConnFailed Status = 6 //  写入失败
+	ClientCreate         = frame.SessionClientCreate    //  客户端建立
+	ClientReconnect      = frame.SessionClientReconnect //  客户端重新链接
+	Connected            = frame.SessionConnected       //  正常连接。
+	CloseNormalClosure   = frame.CloseNormalClosure     // 正常关闭连接
+	CloseHartTimeOut     = frame.SessionHartTimeOut     //  心跳超时
+	CloseWriteConnFailed = frame.SessionWriteConnFailed //  写入失败
+	CloseReadConnFailed  = frame.CloseGoingAway         // 读取失败
 )
-
-// StatusToError    状态转换成 error
-func StatusToError(s Status) error {
-	switch s {
-	case Connected:
-		return nil
-	case CloseNormalClosure:
-		return nil
-	case CloseHartTimeOut:
-		return errors.New(fmt.Sprintf("%d: Heartbeat Timeout,close connection", CloseHartTimeOut))
-	case CloseReadConnFailed:
-		return errors.New(fmt.Sprintf("%d: Read connection failed,close connection", CloseReadConnFailed))
-	case CloseWriteConnFailed:
-		return errors.New(fmt.Sprintf("%d: Write to connection failed,close connection", CloseWriteConnFailed))
-	}
-	return errors.New("unknown errors")
-}
