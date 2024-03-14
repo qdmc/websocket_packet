@@ -84,23 +84,19 @@ func readByte(r io.Reader) (byte, error) {
 // buffLen             分割长度
 func packetBytesDivision(bs []byte, buffLen int) [][]byte {
 	var list [][]byte
-	if len(bs) < 1 {
+	if bs == nil || len(bs) < 1 {
 		return list
 	}
-	if buffLen < 1 || len(bs) < buffLen {
+	if buffLen < 1 || len(bs) <= buffLen {
 		list = append(list, bs)
 		return list
 	}
-	start := 0
-	for start < len(bs) {
-		end := start + buffLen
-		if end >= (len(bs) - 1) {
-			list = append(list, bs[start:])
-		} else {
-			list = append(list, bs[start:end])
-
-		}
-		start += buffLen
+	for len(bs) > buffLen {
+		list = append(list, bs[0:buffLen])
+		bs = bs[buffLen:]
+	}
+	if bs != nil && len(bs) > 0 {
+		list = append(list, bs)
 	}
 	return list
 }
