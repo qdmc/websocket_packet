@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -120,14 +121,17 @@ func disconnectCb(id int64, s frame.CloseStatus) {
 }
 
 func msgCb(id int64, t byte, bs []byte) {
-	fmt.Println("********************************************")
-	fmt.Println("id: ", id, " t: ", t, " msg: ", string(bs))
-	fmt.Println("********************************************")
-
-	//val := atomic.AddUint64(msgCount, 1)
-	//if val > 1000 && val/1000 == 0 {
-	//	fmt.Println("count: ", val)
+	//fmt.Println("********************************************")
+	//fmt.Println("id: ", id, " t: ", t, " msg: ", string(bs))
+	//fmt.Println("********************************************")
+	//_, err := server.SendMessage(id, t, []byte("ok"))
+	//if err != nil {
+	//	fmt.Println("server.SendMessageErr: ", err.Error())
 	//}
+	val := atomic.AddUint64(msgCount, 1)
+	if val > 1000 && val/1000 == 0 {
+		fmt.Println("count: ", val)
+	}
 }
 
 func Test_ping(t *testing.T) {

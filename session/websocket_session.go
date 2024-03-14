@@ -21,7 +21,7 @@ import (
 type ConnectedCallBackHandle func(id int64, header http.Header)
 
 // DisConnectCallBackHandle    断开链接后的回调
-type DisConnectCallBackHandle func(id int64, status Status)
+type DisConnectCallBackHandle func(id int64, status Status, db *ConnectionDatabase)
 
 // FrameCallBackHandle         帧读取后的回调
 type FrameCallBackHandle func(id int64, t byte, payload []byte)
@@ -335,7 +335,12 @@ func (s *websocketSession) close(status Status) {
 		}
 		s.status = status
 		if s.disConnectCb != nil {
-			go s.disConnectCb(s.GetId(), s.status)
+			if s.isStatistics {
+				db := s.GetStatus()
+				go s.disConnectCb(s.GetId(), s.status, &db)
+			} else {
+				go s.disConnectCb(s.GetId(), s.status, nil)
+			}
 		}
 		s.closeNano = time.Now().UnixNano()
 	}

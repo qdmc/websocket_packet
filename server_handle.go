@@ -291,10 +291,10 @@ func (s *sessionManager) doConnCb(id int64, header http.Header) {
 		go s.cb.ConnectedCallBackHandle(id, header)
 	}
 }
-func (s *sessionManager) doDisConnCb(id int64, status ClientStatus) {
+func (s *sessionManager) doDisConnCb(id int64, status ClientStatus, db *session.ConnectionDatabase) {
 	item := s.delSession(id)
 	if item != nil && s.cb != nil && s.cb.DisConnectCallBackHandle != nil {
-		go s.cb.DisConnectCallBackHandle(id, status)
+		go s.cb.DisConnectCallBackHandle(id, status, db)
 	}
 }
 
