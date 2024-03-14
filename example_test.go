@@ -7,11 +7,19 @@ import (
 	"github.com/qdmc/websocket_packet/frame"
 	"net/http"
 	"testing"
+	"time"
 )
+
+var msgCount *uint64
+
+func init() {
+	count := uint64(0)
+	msgCount = &count
+}
 
 func ExampleNewClient() {
 	// 配置一个请求的header,将在服务的链接成功回调中获取到
-	var dialHeader http.Header
+	dialHeader := http.Header{}
 	dialHeader.Add("token", "my_token_xxx")
 	client := NewClient(&ClientOptions{
 		ReConnectMaxNum:    3,
@@ -58,15 +66,15 @@ func Test_server(t *testing.T) {
 		FrameCallBackHandle:      msgCb,
 	}
 	server = NewServerHandle()
-	//go func() {
-	//	for {
-	//		time.Sleep(5 * time.Second)
-	//		fmt.Println("***clientNum: ", server.Len())
-	//	}
-	//}()
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			fmt.Println("***clientNum: ", server.Len())
+		}
+	}()
 	server.SetCallbacks(cbs)
 	server.SetTimeOut(60)
-	server.SetPingTime(10)
+	server.SetPingTime(-1)
 	server.SetStatistics(true)
 	http.Handle("/websocket", server)
 	addr := ":8081"
@@ -91,30 +99,35 @@ func clientMsgCallback(t byte, bs []byte) {
 }
 
 func connectedCb(id int64, header http.Header) {
-	println("connected: ", id)
-	go func() {
-		//time.Sleep(25 * time.Second)
-		//fmt.Println("--- Disconnect ", id)
-		//err := server.DisConnect(id)
-		//if err != nil {
-		//	fmt.Println("err: ", err)
-		//	os.Exit(1)
-		//}
-	}()
+	//println("connected: ", id)
+	//go func() {
+	//	//time.Sleep(25 * time.Second)
+	//	//fmt.Println("--- Disconnect ", id)
+	//	//err := server.DisConnect(id)
+	//	//if err != nil {
+	//	//	fmt.Println("err: ", err)
+	//	//	os.Exit(1)
+	//	//}
+	//}()
 }
 
 func disconnectCb(id int64, s frame.CloseStatus) {
-	println("disconnect: ", id)
-	err := frame.StatusToError(s)
-	if err != nil {
-		println("disconnectErr:  ", err.Error())
-	}
+	//println("disconnect: ", id)
+	//err := frame.StatusToError(s)
+	//if err != nil {
+	//	println("disconnectErr:  ", err.Error())
+	//}
 }
 
 func msgCb(id int64, t byte, bs []byte) {
-	println("acceptFrame: ", id)
-	println("acceptFrame: ", t)
-	println("acceptFrame: ", string(bs))
+	fmt.Println("********************************************")
+	fmt.Println("id: ", id, " t: ", t, " msg: ", string(bs))
+	fmt.Println("********************************************")
+
+	//val := atomic.AddUint64(msgCount, 1)
+	//if val > 1000 && val/1000 == 0 {
+	//	fmt.Println("count: ", val)
+	//}
 }
 
 func Test_ping(t *testing.T) {
@@ -161,4 +174,16 @@ func Test_Pong(t *testing.T) {
 	}
 	fmt.Println("hexStr1 :", hex.EncodeToString(bs))
 	fmt.Println("hexStr2 :", hex.EncodeToString(bs2))
+}
+
+func Test_BinaryMsg(t *testing.T) {
+	bs, err := frame.AutoBinaryFramesBytes([]byte("test"))
+	if err != nil {
+		t.Fatal("err: ", err.Error())
+	}
+	_, f, status := frame.ReadOnceFrame(bytes.NewReader(bs))
+	if frame.StatusToError(status) != nil {
+		t.Fatal("ReadOnceFrameErr: ")
+	}
+	fmt.Println(f.ToString())
 }

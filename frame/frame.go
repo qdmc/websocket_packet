@@ -68,7 +68,7 @@ func (f *Frame) SetFin(b byte) {
 	}
 }
 func (f *Frame) SetOpcode(b byte) {
-	if b == 0x00 || b == 0x01 || b == 0x08 || b == 0x09 || b == 0x0A {
+	if b == 0x00 || b == 0x01 || b == 0x02 || b == 0x08 || b == 0x09 || b == 0x0A {
 		f.Opcode = b
 	}
 
@@ -409,6 +409,7 @@ func AutoBinaryFramesBytes(bs []byte, keys ...uint32) ([]byte, error) {
 			return nil, err
 		}
 	}
+
 	return framesBytes, nil
 }
 
@@ -470,7 +471,7 @@ func AutoTextFramesBytes(bs []byte, keys ...uint32) ([]byte, error) {
 
 // CheckFrameType      校验帧的类型
 func CheckFrameType(b byte) CloseStatus {
-	if b == 0x00 || b == 0x01 || b == 0x08 || b == 0x09 || b == 0x0A {
+	if b == 0x00 || b == 0x01 || b == 0x02 || b == 0x08 || b == 0x09 || b == 0x0A {
 		return CloseNormalClosure
 	}
 	return CloseUnsupportedData

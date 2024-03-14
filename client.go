@@ -112,11 +112,11 @@ func NewClient(opt *ClientOptions) *Client {
 // Client                 websocket客户端,只有一个 Session,并自动发送ping帧(25秒)与自动回复pong帧
 type Client struct {
 	//mu            sync.Mutex
-	opt              *ClientOptions
-	s                Session
-	status           ClientStatus
-	url              *url.URL
-	protocol, origin string
+	opt    *ClientOptions
+	s      Session
+	status ClientStatus
+	url    *url.URL
+	//protocol, origin string
 }
 
 // GetOptions                返回配置项
@@ -138,11 +138,11 @@ func (c *Client) Dial(url string) error {
 	}
 	err := c.parseUrl(url)
 	if err != nil {
-		return err
+		return errors.New(fmt.Sprintf("urlErr: %s", err.Error()))
 	}
 	err = c.dialToServer()
 	if err != nil {
-		return err
+		return errors.New(fmt.Sprintf("dialToServerErr: %s", err.Error()))
 	}
 	return nil
 }
@@ -237,7 +237,7 @@ func (c *Client) dialToServer() error {
 	if c.opt.RequestTime < 3 || c.opt.RequestTime > 60 {
 		c.opt.RequestTime = 10
 	}
-	conn, err := net.DialTimeout("tcp", c.url.String(), time.Duration(c.opt.RequestTime)*time.Second)
+	conn, err := net.DialTimeout("tcp", c.url.Host, time.Duration(c.opt.RequestTime)*time.Second)
 	if err != nil {
 		return err
 	}
@@ -296,20 +296,15 @@ func (c *Client) parseUrl(urlStr string) error {
 		return err
 	}
 	var scheme string
-	var origin string
 	if u.Scheme == "ws" {
-		origin = fmt.Sprintf("http://%s", u.Host)
 		scheme = "http"
 	} else if u.Scheme == "wss" {
-		origin = fmt.Sprintf("https://%s", u.Host)
 		scheme = "https"
 	} else {
 		return errors.New("scheme must be ws or wss")
 	}
 	u.Scheme = scheme
 	c.url = u
-	c.protocol = u.Scheme
-	c.origin = origin
 	return nil
 }
 func (c *Client) makeRequest() *http.Request {
@@ -320,7 +315,7 @@ func (c *Client) makeRequest() *http.Request {
 		ProtoMajor: 1,
 		ProtoMinor: 1,
 		Header:     make(http.Header),
-		Host:       c.origin,
+		Host:       c.url.Host,
 	}
 	key, _ := generateChallengeKey()
 	req.Header["Upgrade"] = []string{"websocket"}

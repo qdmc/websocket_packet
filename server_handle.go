@@ -299,6 +299,7 @@ func (s *sessionManager) doDisConnCb(id int64, status ClientStatus) {
 }
 
 func (s *sessionManager) doMsgCb(id int64, t byte, payload []byte) {
+	//println("---- server_handle.doMsgCb ----  type: ", t)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if item, ok := s.m[id]; ok && item.t != nil && s.timeOutSecond >= 1 {
