@@ -176,7 +176,7 @@ func (c *Client) connCb() {
 }
 
 // disConnCb     断开回调方法
-func (c *Client) disConnCb(id int64, s ClientStatus) {
+func (c *Client) disConnCb(id int64, s ClientStatus, db *session.ConnectionDatabase) {
 	c.status = s
 	if c.opt != nil && c.opt.DisConnectCallback != nil {
 		go c.opt.DisConnectCallback(frame.StatusToError(s))
