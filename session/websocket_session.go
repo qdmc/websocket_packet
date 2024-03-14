@@ -9,6 +9,7 @@ package session
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
 	"net"
 	"net/http"
@@ -31,8 +32,8 @@ type ConnectionDatabase struct {
 	Id            int64  // sessionId
 	ConnectedNano int64  // 链接开始时间
 	CloseNano     int64  // 链接断开时间
-	SendLength    uint64 // 发送的数据长度
-	WriteLength   uint64 // 接收的数据长度
+	WriteLength   uint64 // 发送的数据长度
+	ReadLength    uint64 // 接收的数据长度
 	Status        Status // 状态
 	IsStatistics  bool   // 是否开启流量统计,默认为false
 }
@@ -41,6 +42,7 @@ type ConnectionDatabase struct {
 WebsocketSessionInterface                            session通用接口
   - IsServer() bool                                  是否是服务端session
   - GetId() int64                                    返回sessionId:服务端的sessionId全局唯一,客户端sessionId为0;
+  - GetIdString() string                             返回sessionId,以兼容bingo框架的websocket_client_id为string类型
   - GetStatus() Status                               返回session状态
   - DoConnect(autoPingTicker ...int64)               执行conn的读取,autoPingTicker:自动发送pingFrame的ticker,>=10为有效值,默认是25秒
   - Write(frameType byte, bs []byte, keys ...uint32) 写入消息:frameType(消息类型,1,2,9,10 为有效值)
@@ -48,6 +50,7 @@ WebsocketSessionInterface                            session通用接口
 */
 type WebsocketSessionInterface interface {
 	GetId() int64
+	GetIdString() string
 	GetConn() net.Conn
 	IsServer() bool
 	GetStatus() ConnectionDatabase
@@ -121,6 +124,9 @@ type websocketSession struct {
 	writeLen          *uint64
 }
 
+func (s *websocketSession) GetIdString() string {
+	return fmt.Sprintf("%d", s.GetId())
+}
 func (s *websocketSession) GetId() int64 {
 	return s.id
 }
@@ -136,8 +142,8 @@ func (s *websocketSession) GetStatus() ConnectionDatabase {
 		Id:            s.id,
 		ConnectedNano: s.startNano,
 		CloseNano:     s.closeNano,
-		SendLength:    atomic.LoadUint64(s.readLen),
 		WriteLength:   atomic.LoadUint64(s.writeLen),
+		ReadLength:    atomic.LoadUint64(s.readLen),
 		Status:        s.status,
 		IsStatistics:  s.isStatistics,
 	}
@@ -330,6 +336,7 @@ func (s *websocketSession) close(status Status) {
 	s.mu.Lock()
 	s.mu.Unlock()
 	if s.status == Connected {
+		s.closeNano = time.Now().UnixNano()
 		if status == CloseNormalClosure || status == CloseReadConnFailed || CloseHartTimeOut == status {
 			close(s.stopChan)
 		}
@@ -342,7 +349,6 @@ func (s *websocketSession) close(status Status) {
 				go s.disConnectCb(s.GetId(), s.status, nil)
 			}
 		}
-		s.closeNano = time.Now().UnixNano()
 	}
 	if s.pingTicker != nil {
 		s.pingTicker.Stop()
