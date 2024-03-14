@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/qdmc/websocket_packet/frame"
+	"github.com/qdmc/websocket_packet/session"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -112,7 +113,7 @@ func connectedCb(id int64, header http.Header) {
 	//}()
 }
 
-func disconnectCb(id int64, s frame.CloseStatus) {
+func disconnectCb(id int64, s frame.CloseStatus, db *session.ConnectionDatabase) {
 	//println("disconnect: ", id)
 	//err := frame.StatusToError(s)
 	//if err != nil {
