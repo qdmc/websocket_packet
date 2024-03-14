@@ -38,7 +38,7 @@ type ClientOptions struct {
 	ReConnectMaxNum    int
 	ReConnectInterval  int64
 	ConnectedCallback  func()
-	DisConnectCallback func(err error)
+	DisConnectCallback func(err error, db *session.ConnectionDatabase)
 	MessageCallback    func(byte, []byte)
 	RequestHeader      http.Header
 	RequestTime        int64
@@ -79,7 +79,7 @@ func (o *ClientOptions) SetConnectedCb(f func()) *ClientOptions {
 }
 
 // SetDisconnectCb      配置断开后的回调
-func (o *ClientOptions) SetDisconnectCb(f func(err error)) *ClientOptions {
+func (o *ClientOptions) SetDisconnectCb(f func(err error, db *session.ConnectionDatabase)) *ClientOptions {
 	o.DisConnectCallback = f
 	return o
 }
@@ -179,7 +179,7 @@ func (c *Client) connCb() {
 func (c *Client) disConnCb(id int64, s ClientStatus, db *session.ConnectionDatabase) {
 	c.status = s
 	if c.opt != nil && c.opt.DisConnectCallback != nil {
-		go c.opt.DisConnectCallback(frame.StatusToError(s))
+		go c.opt.DisConnectCallback(frame.StatusToError(s), db)
 	}
 	if s == session.CloseNormalClosure {
 		c.status = session.ClientCreate

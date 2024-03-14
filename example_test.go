@@ -24,15 +24,21 @@ func ExampleNewClient() {
 	dialHeader := http.Header{}
 	dialHeader.Add("token", "my_token_xxx")
 	client := NewClient(&ClientOptions{
-		ReConnectMaxNum:    3,
-		ReConnectInterval:  5,
-		ConnectedCallback:  clientConnectedCallback,
-		DisConnectCallback: clientDisConnectCallback,
-		MessageCallback:    clientMsgCallback,
-		RequestHeader:      dialHeader,
-		RequestTime:        30,
-		PingTime:           25,
-		IsStatistics:       false,
+		ReConnectMaxNum:   3,
+		ReConnectInterval: 5,
+		ConnectedCallback: func() {
+			// do connected
+		},
+		DisConnectCallback: func(e error, db *session.ConnectionDatabase) {
+			// do disconnect
+		},
+		MessageCallback: func(t byte, bs []byte) {
+			// do frame message
+		},
+		RequestHeader: dialHeader,
+		RequestTime:   30,
+		PingTime:      25,
+		IsStatistics:  false,
 	})
 	err := client.Dial("ws://127.0.0.1:8080")
 	if err != nil {
@@ -44,9 +50,19 @@ func ExampleNewServerHandle() {
 	serv := NewServerHandle()
 	// 配置回调
 	serv.SetCallbacks(&CallbackHandles{
-		ConnectedCallBackHandle:  connectedCb,
-		DisConnectCallBackHandle: disconnectCb,
-		FrameCallBackHandle:      msgCb,
+		ConnectedCallBackHandle: func(id int64, header http.Header) {
+			// do connected
+		},
+		DisConnectCallBackHandle: func(id int64, s frame.CloseStatus, db *session.ConnectionDatabase) {
+			// do disconnect
+		},
+		FrameCallBackHandle: func(id int64, t byte, bs []byte) {
+			// do frame message
+		},
+	})
+	serv.SetHandshakeCheckHandle(func(req *http.Request) error {
+		// do Handshake
+		return nil
 	})
 	// 配置超时
 	serv.SetTimeOut(60)
@@ -62,6 +78,7 @@ func ExampleNewServerHandle() {
 var server ServerHandlerInterface
 
 func Test_server(t *testing.T) {
+
 	cbs := &CallbackHandles{
 		ConnectedCallBackHandle:  connectedCb,
 		DisConnectCallBackHandle: disconnectCb,
@@ -89,15 +106,12 @@ func Test_server(t *testing.T) {
 }
 
 func clientConnectedCallback() {
-
 }
 
-func clientDisConnectCallback(e error) {
-
+func clientDisConnectCallback(e error, db *session.ConnectionDatabase) {
 }
 
 func clientMsgCallback(t byte, bs []byte) {
-
 }
 
 func connectedCb(id int64, header http.Header) {
