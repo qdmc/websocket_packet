@@ -213,9 +213,6 @@ func (s *sessionManager) SetTimeOut(i int64) {
 
 // ServeHTTP            实现Http.HandlerFunc
 func (s *sessionManager) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if s.isServerHttp {
-		return
-	}
 	s.isServerHttp = true
 	var conn net.Conn
 	var err error
