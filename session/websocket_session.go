@@ -19,7 +19,7 @@ import (
 )
 
 // ConnectedCallBackHandle     建立链接后的回调
-type ConnectedCallBackHandle func(id int64, header http.Header)
+type ConnectedCallBackHandle func(id int64, req *http.Request)
 
 // DisConnectCallBackHandle    断开链接后的回调
 type DisConnectCallBackHandle func(id int64, status Status, db *ConnectionDatabase)

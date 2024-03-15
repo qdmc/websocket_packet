@@ -50,7 +50,7 @@ func ExampleNewServerHandle() {
 	serv := NewServerHandle()
 	// 配置回调
 	serv.SetCallbacks(&CallbackHandles{
-		ConnectedCallBackHandle: func(id int64, header http.Header) {
+		ConnectedCallBackHandle: func(id int64, req *http.Request) {
 			// do connected
 		},
 		DisConnectCallBackHandle: func(id int64, s frame.CloseStatus, db *session.ConnectionDatabase) {
@@ -114,7 +114,7 @@ func clientDisConnectCallback(e error, db *session.ConnectionDatabase) {
 func clientMsgCallback(t byte, bs []byte) {
 }
 
-func connectedCb(id int64, header http.Header) {
+func connectedCb(id int64, req *http.Request) {
 	//println("connected: ", id)
 	//go func() {
 	//	//time.Sleep(25 * time.Second)
